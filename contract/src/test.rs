@@ -5427,6 +5427,41 @@ fn test_get_charge_history_empty_for_no_history() {
 }
 
 #[test]
+fn test_charge_history_page_overflow_inputs_and_trim_boundary() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    assert!(client
+        .get_charge_history_page(&user, &u32::MAX, &u32::MAX, &true)
+        .is_empty());
+
+    env.as_contract(&contract_id, || {
+        for timestamp in 1..=12 {
+            subscription_history::record_charge(&env, &user, timestamp);
+        }
+    });
+
+    let at_capacity = client.get_charge_history_page(&user, &0, &u32::MAX, &true);
+    assert_eq!(at_capacity.len(), 12);
+    assert_eq!(at_capacity.get(0).unwrap(), 1);
+    assert_eq!(at_capacity.get(11).unwrap(), 12);
+
+    // This used to overflow u32 while computing `offset + limit`.
+    let wide_page = client.get_charge_history_page(&user, &1, &u32::MAX, &true);
+    assert_eq!(wide_page.len(), 11);
+    assert_eq!(wide_page.get(0).unwrap(), 2);
+    assert_eq!(wide_page.get(10).unwrap(), 12);
+
+    env.as_contract(&contract_id, || {
+        subscription_history::record_charge(&env, &user, 13);
+    });
+    let after_trim = client.get_charge_history_page(&user, &0, &u32::MAX, &true);
+    assert_eq!(after_trim.len(), 12);
+    assert_eq!(after_trim.get(0).unwrap(), 2);
+    assert_eq!(after_trim.get(11).unwrap(), 13);
+}
+
+#[test]
 fn test_get_charge_history_page_limit_capped_at_12() {
     let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
@@ -6775,6 +6810,43 @@ fn test_min_interval_event_emitted_on_set() {
     let event_data3: events::MinIntervalSetEventData = data3.try_into_val(&env).unwrap();
     assert_eq!(event_data3.old, 86400);
     assert_eq!(event_data3.new, 86400);
+}
+
+#[test]
+fn test_merchant_page_empty_sparse_and_offset_bounds() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    assert!(client.get_merchant_page(&0, &10).is_empty());
+
+    let merchants = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    env.as_contract(&contract_id, || {
+        for merchant in merchants.iter() {
+            merchant_stats::index_merchant(&env, merchant);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MerchantIndex(1));
+    });
+
+    let page = client.get_merchant_page(&0, &u32::MAX);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), merchants[0]);
+    assert_eq!(page.get(1).unwrap(), merchants[2]);
+    assert!(client.get_merchant_page(&3, &10).is_empty());
+    assert!(client.get_merchant_page(&u32::MAX, &u32::MAX).is_empty());
+
+    env.as_contract(&contract_id, || {
+        for _ in 0..51 {
+            merchant_stats::index_merchant(&env, &Address::generate(&env));
+        }
+    });
+    assert_eq!(client.get_merchant_page(&3, &u32::MAX).len(), 50);
+    assert_eq!(client.get_merchant_page(&53, &u32::MAX).len(), 1);
 }
 
 #[test]

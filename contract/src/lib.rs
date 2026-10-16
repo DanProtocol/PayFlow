@@ -723,12 +723,18 @@ impl FlowPay {
     /// # Side Effects
     ///
     /// Marks the subscription inactive, decrements active subscription count, and
-    /// emits `cancelled`.
+    /// emits `cancelled` when transitioning an active subscription. Cancelling
+    /// an already-inactive subscription is a no-op and emits no event.
     pub fn cancel(env: Env, user: Address) {
         bump_instance_ttl(&env);
         user.require_auth();
+        let was_active = storage::get_subscription(&env, &user)
+            .map(|sub| sub.active)
+            .unwrap_or(false);
         cancel_inner(&env, &user);
-        events::publish_cancelled(&env, &user);
+        if was_active {
+            events::publish_cancelled(&env, &user);
+        }
     }
 
     /// Extends an active subscription's trial period (or delays next charge)
@@ -891,10 +897,10 @@ impl FlowPay {
         // (`pause_until`) — must never deactivate the subscription. `active`
         // is the "row is live" flag: it only turns false on cancellation
         // (see `storage::is_cancelled`). Keeping `active = true` here makes
-        // `paused && !active` a legacy-only state, so every reader (active
-        // counts, refunds, batch auto-resume, index pages) interprets paused
-        // subscriptions the same way, and resume/auto-resume just flip
-        // `paused` back off.
+        // `paused && !active` a legacy-only state. Active counts and active
+        // readers exclude those legacy rows; raw append-only index readers
+        // still enumerate their recorded slots. Resume/auto-resume flips
+        // `paused` back off and restores `active`.
         sub.paused = true;
 
         env.storage().persistent().set(&key, &sub);
@@ -1397,6 +1403,12 @@ impl FlowPay {
         whitelist::get_whitelist_size(&env)
     }
 
+    /// Returns a page of merchants from the full merchant index, including
+    /// merchants with no active subscribers. The slot scan is capped at 50.
+    pub fn get_merchant_page(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        merchant_stats::get_merchant_page(&env, offset, limit)
+    }
+
     /// Returns the whitelist and freeze status for a batch of merchant addresses.
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50) so the read path and the
@@ -1614,13 +1626,15 @@ impl FlowPay {
             if !subscription_count::is_subscriber_index_removed(&env, i) {
                 if let Some(addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::SubscriberIndex(i)) {
                     if let Some(sub) = storage::get_subscription(&env, &addr) {
-                        if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
-                            let now = env.ledger().timestamp();
-                            if now >= next {
-                                let grace = grace::get_grace_period(&env);
-                                let lapsed = grace > 0 && now > next.saturating_add(grace);
-                                if !exclude || !lapsed {
-                                    result.push_back(addr);
+                        if sub.active {
+                            if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
+                                let now = env.ledger().timestamp();
+                                if now >= next {
+                                    let grace = grace::get_grace_period(&env);
+                                    let lapsed = grace > 0 && now > next.saturating_add(grace);
+                                    if !exclude || !lapsed {
+                                        result.push_back(addr);
+                                    }
                                 }
                             }
                         }

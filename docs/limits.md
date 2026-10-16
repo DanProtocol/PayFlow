@@ -44,6 +44,7 @@ capped entrypoint below reads one of them, so this is the complete set.
 | `MAX_WHITELIST_BATCH_SIZE`        | 50    | `whitelist_batch_add` / `_remove`, `get_merchant_statuses` | Yes, via `set_max_whitelist_batch_size` |
 | `MAX_MERCHANT_SUB_COUNT_BATCH`    | 50    | `get_merchant_sub_counts`                    | No                     |
 | `SUBSCRIBER_PAGE_SIZE`            | 50    | `get_subscriber_page`, `get_active_subscriber_page`, `get_next_charge_batch` | No |
+| `MERCHANT_PAGE_SIZE`              | 50    | `get_merchant_page`                           | No                     |
 | `REVENUE_DAY_PAGE_SIZE`           | 30    | `get_merchant_revenue_day_page`              | No                     |
 | `TOP_MERCHANTS_PAGE_SIZE`         | 20    | `get_top_merchants_by_subs`                  | No                     |
 
@@ -117,6 +118,7 @@ of them has a default, so a caller must always pass one.
 | ------------------------------- | --------- | ----- | ----------------------- | ------------------ |
 | `get_subscriber_page`           | `limit`   | 50    | Silently clamps to 50   | Up to 50 addresses |
 | `get_active_subscriber_page`    | `limit`   | 50    | Silently clamps to 50   | Up to 50 addresses |
+| `get_merchant_page`             | `limit`   | 50    | Silently clamps to 50   | Up to 50 merchants |
 | `get_next_charge_batch`         | `limit`   | 50    | Panics `BatchTooLarge`  | Up to 50 addresses |
 | `get_top_merchants_by_subs`     | `limit`   | 20    | Panics `BatchTooLarge`  | Up to 20 rows      |
 | `get_merchant_revenue_day_page` | `limit`   | 30    | Panics `BatchTooLarge`  | Up to 30 `(day, amount)` pairs |
@@ -134,6 +136,8 @@ Notes:
   merchant's day history, so deep pages are progressively more expensive.
 - `get_whitelist_page` is unbounded, which is fine for a list that is normally
   tens of entries but is worth knowing before you paginate a large whitelist.
+- `get_merchant_page` scans at most 50 merchant-index slots per call. Its
+  offset is a slot index, and missing slots are skipped.
 
 There is one more read cap that is not a page cap and is not in `caps.rs`:
 

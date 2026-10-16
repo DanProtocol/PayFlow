@@ -118,14 +118,12 @@ pub fn get_charge_history_page(
         return page;
     }
 
-    let end = if offset + effective_limit > total_ordered {
-        total_ordered
-    } else {
-        offset + effective_limit
-    };
-
-    for i in offset..end {
-        page.push_back(ordered_history.get(i).unwrap());
+    let start = u64::from(offset);
+    let end = (start + u64::from(effective_limit)).min(u64::from(total_ordered));
+    let mut index = start;
+    while index < end {
+        page.push_back(ordered_history.get(index as u32).unwrap());
+        index += 1;
     }
 
     page

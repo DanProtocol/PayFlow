@@ -117,12 +117,16 @@ pub fn clear_pause_expiry(env: &Env, user: &Address) {
 /// Cancellation (`cancel`, `batch_cancel`, `cancel_and_refund_prorated`) is
 /// the only writer of `active = false`.
 ///
-/// Readers that ask "is this subscription still live / counted?" must use
-/// this helper (or its `!` form) instead of a bare `sub.active`, so cancelled
-/// and paused rows cannot be conflated:
+/// Legacy `paused && !active` rows are excluded from active counts and active
+/// subscriber readers because their `active` flag is false. Raw append-only
+/// subscriber-index readers still return the recorded address; they enumerate
+/// slots rather than active subscriptions. `is_cancelled` preserves the
+/// separate cancellation distinction for mutation and charge flows:
+/// legacy paused rows are not considered cancelled by that helper.
 ///
 /// - `subscription_count` — a paused subscription stays counted as active.
-/// - `get_active_subscriber_page` — a paused subscription stays listed.
+/// - `get_active_subscriber_page` — current paused subscriptions with
+///   `active == true` stay listed; legacy inactive-paused rows do not.
 /// - `cancel_and_refund_prorated` — `active == false` means cancelled, not
 ///   paused; the separate `paused` check is what blocks paused rows.
 /// - `batch auto-resume` (`try_auto_resume`) — cancels and paused rows are
