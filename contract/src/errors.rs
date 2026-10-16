@@ -55,4 +55,8 @@ pub enum ContractError {
     NoPendingProposal = 23,
     /// Returned when fee collector is the contract itself or equals the charging user
     InvalidFeeCollector = 24,
+    /// Returned when a grace period value exceeds safe limits (overflow risk)
+    ArithmeticOverflow = 25,
+    /// Returned when daily spending limit would be exceeded
+    DailyLimitExceeded = 26,
 }
