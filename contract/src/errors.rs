@@ -117,4 +117,6 @@ pub enum ContractError {
     /// a `u64` timestamp. Subscriptions with an extreme legacy interval cannot
     /// be re-created; document such cases and re-subscribe with a valid interval.
     IntervalExceedsMaximum = 46,
+    /// Returned when a merchant freeze reason exceeds the 128-byte length limit.
+    FreezeReasonTooLong = 47,
 }

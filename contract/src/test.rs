@@ -1394,6 +1394,48 @@ fn test_freeze_merchant_idempotent() {
     assert!(client.is_merchant_frozen(&merchant));
 }
 
+#[test]
+fn test_freeze_merchant_reason_at_byte_limit() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    // Each character occupies two UTF-8 bytes, so this is exactly 128 bytes.
+    let reason = soroban_sdk::String::from_str(&env, &"é".repeat(64));
+    client.freeze_merchant(&merchant, &Some(reason.clone()));
+
+    assert!(client.is_merchant_frozen(&merchant));
+    assert_eq!(client.get_merchant_freeze_reason(&merchant), Some(reason));
+}
+
+#[test]
+fn test_freeze_merchant_reason_too_long_returns_typed_error() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+    let events_before = env.events().all().len();
+
+    // Cover both the first invalid byte length and multibyte UTF-8 input.
+    for text in ["a".repeat(129), "é".repeat(65)] {
+        let reason = soroban_sdk::String::from_str(&env, &text);
+        assert_eq!(
+            client.try_freeze_merchant(&merchant, &Some(reason)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                crate::errors::ContractError::FreezeReasonTooLong as u32
+            )))
+        );
+        assert!(!client.is_merchant_frozen(&merchant));
+        assert_eq!(client.get_merchant_freeze_reason(&merchant), None);
+        assert_eq!(env.events().all().len(), events_before);
+    }
+}
+
 /// unfreeze_merchant on a non-frozen merchant must not panic.
 #[test]
 fn test_unfreeze_merchant_non_frozen_is_noop() {

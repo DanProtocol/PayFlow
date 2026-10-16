@@ -60,6 +60,7 @@ Use the [quick-reference table](#quick-reference-table) for lookups, then jump t
 | 44   | `AdminAlreadySet`           | State        | `set_initial_admin` after admin already stored |
 | 45   | `NoPendingAdmin`            | State        | `accept_admin` with no staged transfer |
 | 46   | `IntervalExceedsMaximum`    | Validation   | Interval above `MAX_SUBSCRIPTION_INTERVAL` (400 yr) |
+| 47   | `FreezeReasonTooLong`       | Validation   | Merchant freeze reason > 128 bytes |
 
 > **Compatibility:** code 18 (`ContractPaused`) is the sole canonical contract-paused error and is emitted by every pause guard. `ContractPausedError` remains a deprecated Rust enum variant at code 30 only for source/wire compatibility with clients that published that value; it is never emitted by current WASM. Code 31 is intentionally reserved and has no enum variant in the published map. Code 37 remains unassigned; new errors must use a new code and update this table, frontend handling, and mapping tests together. Source of truth: [`contract/src/errors.rs`](../contract/src/errors.rs).
 
@@ -830,13 +831,29 @@ This is distinct from `AlreadyInitialized` (code 1), which guards the full `init
 
 ---
 
+### 47 — `FreezeReasonTooLong`
+
+| Field               | Detail |
+| ------------------- | ------ |
+| **When it occurs**  | `freeze_merchant()` receives a reason longer than 128 bytes for a merchant that is not already frozen. |
+| **Immediate cause** | Freeze-reason validation rejects the input before writing freeze state or emitting an event. |
+
+**Recovery steps**
+
+1. Shorten the merchant freeze reason to at most 128 UTF-8 bytes.
+2. Retry `freeze_merchant()` as the admin.
+
+**Prevention:** Validate the UTF-8 byte length in admin tooling. Subscription labels have a separate 64-byte limit and continue to use code 14 (`MetadataLabelTooLong`). An already-frozen merchant remains an idempotent no-op.
+
+---
+
 ## Error Categories
 
 | Category       | Codes                                                        | Typical owners                |
 | -------------- | ------------------------------------------------------------ | ----------------------------- |
 | Auth / access  | 8, 10, 22                                                    | User + admin                  |
 | State          | 1, 4, 5, 7, 16, 17, 18, 21, 23, 24, 30, 36, 41, 42, 44, 45 | Deployer, user, admin, keeper |
-| Validation     | 2, 3, 11, 12, 13, 14, 19, 26, 27, 29, 32, 33, 34, 35, 38, 39, 46 | Client / admin tooling   |
+| Validation     | 2, 3, 11, 12, 13, 14, 19, 26, 27, 29, 32, 33, 34, 35, 38, 39, 46, 47 | Client / admin tooling   |
 | Limit / timing | 6, 9, 15, 20, 25, 28, 40                                     | Keeper + user                 |
 
 ---
@@ -911,6 +928,7 @@ This is distinct from `AlreadyInitialized` (code 1), which guards the full `init
 | 9            | “This subscription lapsed. Please subscribe again.”           |
 | 11           | “You cannot refer yourself.”                                  |
 | 14           | “Label must be 64 bytes or fewer.”                            |
+| 47           | “Merchant freeze reason must be 128 bytes or fewer.”          |
 | 17           | “Resume your subscription to continue.”                       |
 | 22           | “This merchant is temporarily unavailable.”                   |
 | 24           | “Destination already has an active subscription.”             |
