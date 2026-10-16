@@ -53,4 +53,6 @@ pub enum ContractError {
     MerchantFrozen = 22,
     /// Returned when a two-step commit is attempted without a pending proposal
     NoPendingProposal = 23,
+    /// Returned when fee collector is the contract itself or equals the charging user
+    InvalidFeeCollector = 24,
 }

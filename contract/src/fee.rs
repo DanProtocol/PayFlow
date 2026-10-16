@@ -29,6 +29,10 @@ pub fn propose_fee(env: &Env, collector: Address, bps: u32) {
     if bps > 10_000 {
         env.panic_with_error(ContractError::InvalidFeeBps);
     }
+    // Reject collector that equals the contract itself
+    if collector == env.current_contract_address() {
+        env.panic_with_error(ContractError::InvalidFeeCollector);
+    }
     crate::admin::require_admin(env);
     let pending = (collector.clone(), bps);
     env.storage().temporary().set(&DataKey::PendingFee, &pending);
@@ -63,10 +67,16 @@ pub fn calculate_fee_amount(amount: i128, bps: u32) -> i128 {
 
 /// Transfers subscription charge amounts (fee to collector, net to merchant).
 /// Returns the fee amount deducted from the gross subscription amount.
+/// Panics if collector equals the charging user (prevents fee accounting inflation).
 pub fn transfer_subscription_charge(env: &Env, user: &Address, sub: &Subscription) -> i128 {
     let bps = get_fee_bps(env);
     let fee_amount = match get_fee_collector(env) {
         Some(collector) if bps > 0 => {
+            // Reject collector that equals the charging user to prevent no-op transfers
+            // that inflate protocol fee accounting
+            if collector == *user {
+                env.panic_with_error(ContractError::InvalidFeeCollector);
+            }
             let fee = calculate_fee_amount(sub.amount, bps);
             if fee > 0 {
                 let token_client = token::Client::new(env, &sub.token);

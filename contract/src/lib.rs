@@ -438,6 +438,10 @@ impl FlowPay {
 
         let mut merchant_amount = amount;
         if let Some((collector, bps)) = fee::get_fee(&env) {
+            // Reject collector that equals the charging user to prevent no-op transfers
+            if collector == user {
+                env.panic_with_error(ContractError::InvalidFeeCollector);
+            }
             let fee_amount = (amount * (bps as i128)) / 10_000;
             if fee_amount > 0 {
                 token.transfer_from(
