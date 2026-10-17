@@ -346,7 +346,7 @@ impl FlowPay {
     }
 
     pub fn get_max_batch_size(env: Env) -> u32 {
-        batch::get_max_batch_size(&env)
+        caps::get_max_batch_size(&env)
     }
 
     pub fn set_max_batch_size(env: Env, size: u32) {
@@ -1374,12 +1374,12 @@ impl FlowPay {
 
     /// Returns whether the merchant whitelist is currently enabled. Defaults to true.
     pub fn get_whitelist_enabled(env: Env) -> bool {
-        whitelist::get_whitelist_enabled(&env)
+        whitelist::is_whitelist_enabled(&env)
     }
 
     /// Returns whether the merchant whitelist is currently enabled.
     pub fn is_whitelist_enabled(env: Env) -> bool {
-        whitelist::is_whitelist_enabled(&env)
+        Self::get_whitelist_enabled(env)
     }
 
     /// Returns whether a merchant is whitelisted.
@@ -1812,7 +1812,7 @@ impl FlowPay {
 
     /// Returns the number of active subscribers for a given merchant (as u32).
     pub fn get_merchant_sub_count(env: Env, merchant: Address) -> u64 {
-        subscription_count::get_merchant_sub_count(&env, &merchant)
+        Self::get_merchant_subscriber_count(env, merchant)
     }
 
     /// Returns active subscriber counts for multiple merchants in a single call.
@@ -1885,7 +1885,7 @@ impl FlowPay {
 
     /// Returns the referrer address for a given subscriber, or `None`.
     pub fn get_referral(env: Env, user: Address) -> Option<Address> {
-        referral::get_referrer(&env, &user)
+        Self::get_referrer(env, user)
     }
 
     /// Returns the referrer address for a given subscriber, or `None`.
@@ -1927,7 +1927,7 @@ impl FlowPay {
 
     /// Alias for `get_metadata` — returns the metadata label for a subscriber, or `None` if not set.
     pub fn get_subscription_label(env: Env, user: Address) -> Option<String> {
-        subscription_metadata::get_metadata(&env, &user)
+        Self::get_metadata(env, user)
     }
 
     /// Clears the metadata label for the caller's subscription.
@@ -2085,8 +2085,7 @@ impl FlowPay {
 
     /// Admin-only: removes the ChargeHistory entry for `user` entirely.
     pub fn prune_charge_history(env: Env, user: Address) {
-        admin::require_admin(&env);
-        subscription_history::prune_charge_history(&env, &user);
+        Self::clear_charge_history(env, user);
     }
 
     /// Returns the current TTL (in ledgers) of the ChargeHistory entry, or 0 if absent.

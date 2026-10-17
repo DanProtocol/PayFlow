@@ -79,11 +79,13 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [get\_merchant\_revenue\_history](#get_merchant_revenue_history)
   - [clear\_merchant\_revenue\_history](#clear_merchant_revenue_history)
   - [get\_merchant\_subscriber\_count](#get_merchant_subscriber_count)
+  - [get\_merchant\_sub\_count](#get_merchant_sub_count)
   - [reset\_merchant\_revenue](#reset_merchant_revenue)
   - [set\_daily\_limit](#set_daily_limit)
   - [remove\_daily\_limit](#remove_daily_limit)
   - [get\_daily\_limit](#get_daily_limit)
   - [get\_daily\_spent](#get_daily_spent)
+  - [get\_referral](#get_referral)
   - [get\_referrer](#get_referrer)
   - [migrate](#migrate)
   - [get\_schema\_version](#get_schema_version)
@@ -98,6 +100,7 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [set\_initial\_admin](#set_initial_admin)
   - [contract\_health\_check](#contract_health_check)
   - [clear\_charge\_history](#clear_charge_history)
+  - [prune\_charge\_history](#prune_charge_history)
   - [get\_charge\_history\_page](#get_charge_history_page)
   - [transfer\_subscription](#transfer_subscription)
   - [validate\_subscription](#validate_subscription)
@@ -1438,7 +1441,7 @@ A non-`Charged` result for one user never aborts the rest of the batch. Insuffic
 
 The public wrapper calls `ensure_contract_not_paused` first: a paused protocol panics `ContractPaused` (18) for the whole invoke (not a per-user result).
 
-Errors: `ContractError::BatchTooLarge` (20) if `users.len()` exceeds `get_max_batch_size` (default 50, ceiling 200). Ordinary per-user outcomes are enum values. Full cap table: [limits.md](./limits.md#batch-operations).
+Errors: `ContractError::BatchTooLarge` (20) if `users.len()` exceeds `get_max_batch_size` (default 50, ceiling 200). `get_max_batch_size` is sourced from a single implementation in [contract/src/caps.rs](../contract/src/caps.rs) (the same key and default used by `contract/src/batch.rs`). Ordinary per-user outcomes are enum values. Full cap table: [limits.md](./limits.md#batch-operations).
 
 Keeper ops: [`KEEPER.md`](./KEEPER.md).
 
@@ -1664,6 +1667,8 @@ Auth: none.
 
 Returns: `u64`.
 
+**Alias:** this is the canonical reader for `DataKey::MerchantSubCount`; it delegates to the single implementation in `contract/src/merchant_stats.rs`. [`get_merchant_sub_count`](#get_merchant_sub_count) is a thin alias over the same body.
+
 CLI example:
 
 ```bash
@@ -1679,6 +1684,8 @@ get_merchant_sub_count(env: Env, merchant: Address) -> u32
 Auth: none.
 
 Returns: `u32` — active subscriber count for `merchant` (same `MerchantSubCount` storage as `get_merchant_subscriber_count`, narrowed to `u32`).
+
+**Alias:** thin delegation to [`get_merchant_subscriber_count`](#get_merchant_subscriber_count); both read `DataKey::MerchantSubCount` through the same `merchant_stats` implementation, so the two can never disagree.
 
 CLI example:
 
@@ -1774,6 +1781,8 @@ Auth: none.
 
 Returns: `Option<Address>`.
 
+**Alias:** `get_referral` and `get_referrer` are byte-identical readers of `DataKey::Referral(user)`; `get_referrer` is the canonical implementation and `get_referral` is a thin delegation to it. Both names remain exported.
+
 CLI example:
 
 ```bash
@@ -1828,6 +1837,8 @@ Auth: none.
 
 Returns: `Option<String>`.
 
+**Alias:** `get_metadata` and [`get_subscription_label`](#get_subscription_label) are byte-identical readers of `DataKey::SubscriptionMeta(user)`; `get_metadata` is the canonical implementation and `get_subscription_label` is a thin delegation to it. Both names remain exported.
+
 CLI example:
 
 ```bash
@@ -1843,6 +1854,8 @@ get_subscription_label(env: Env, user: Address) -> Option<String>
 Auth: none.
 
 Returns: `Option<String>`.
+
+**Alias:** thin delegation to [`get_metadata`](#get_metadata); both read `DataKey::SubscriptionMeta(user)` through the same implementation.
 
 CLI example:
 
@@ -1981,6 +1994,8 @@ clear_charge_history(env: Env, user: Address)
 Auth: `user.require_auth()`.
 
 Returns: `()`.
+
+**Alias:** `clear_charge_history` and `prune_charge_history` are byte-identical; `clear_charge_history` is the canonical implementation and `prune_charge_history` is a thin delegation to it. Both names remain exported.
 
 CLI example:
 

@@ -352,7 +352,7 @@ pub fn get_merchant_sub_counts(env: &Env, merchants: &Vec<Address>) -> Vec<(Addr
 
     let mut result = Vec::new(env);
     for merchant in merchants.iter() {
-        let count = crate::subscription_count::get_merchant_sub_count(env, &merchant);
+        let count = get_merchant_subscriber_count(env, &merchant);
         result.push_back((merchant, count));
     }
     result
