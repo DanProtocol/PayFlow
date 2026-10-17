@@ -200,6 +200,58 @@ pub fn index_merchant(env: &Env, merchant: &Address) {
     }
 }
 
+/// Removes a merchant from the merchant index using swap-remove.
+///
+/// The last occupied slot is moved into the vacated position and the index size
+/// is decremented, mirroring the `WhitelistIndex` compaction in
+/// `whitelist::remove_merchant`. This keeps the index dense (no tombstoned
+/// holes) so `get_top_merchants_by_subs` stops ranking a removed merchant and
+/// its scan cost shrinks by one slot.
+///
+/// The `MerchantKnown` marker is cleared so a later `index_merchant` (on re-add
+/// or a new subscription) appends a fresh slot instead of treating the removed
+/// merchant as already indexed.
+///
+/// Idempotent: removing a merchant that is not indexed is a no-op.
+pub fn unindex_merchant(env: &Env, merchant: &Address) {
+    let size = get_merchant_index_size(env);
+    if size > 0 {
+        for i in 0..size {
+            let key = DataKey::MerchantIndex(i);
+            if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
+                if addr == *merchant {
+                    let last_idx = size - 1;
+                    if i != last_idx {
+                        let last_key = DataKey::MerchantIndex(last_idx);
+                        if let Some(last_addr) =
+                            env.storage().persistent().get::<_, Address>(&last_key)
+                        {
+                            env.storage().persistent().set(&key, &last_addr);
+                            env.storage()
+                                .persistent()
+                                .extend_ttl(&key, 1555200, 1555200);
+                        }
+                    }
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::MerchantIndex(last_idx));
+
+                    let size_key = DataKey::MerchantIndexSize;
+                    env.storage().persistent().set(&size_key, &(size - 1));
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&size_key, 1555200, 1555200);
+                    break;
+                }
+            }
+        }
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::MerchantKnown(merchant.clone()));
+}
+
 /// Returns top N merchants ranked by active subscriber count in descending order.
 /// `limit` is capped at 20; panics with `BatchTooLarge` if exceeded.
 pub fn get_top_merchants_by_subs(env: &Env, limit: u32) -> Vec<(Address, u32)> {
@@ -273,8 +325,31 @@ pub fn decrement_subscriber_count(env: &Env, merchant: &Address) {
     }
 }
 
-/// Resets a merchant's cumulative revenue counter to zero and clears the
-/// day-index so stale entries don't accumulate across reset cycles.
+/// Resets a merchant's revenue accounting to a fully cleared state.
+///
+/// # Reset semantics (Issue #1215)
+///
+/// `reset_merchant_revenue` is a *full* clear. It zeroes the cumulative total,
+/// removes every per-day bucket referenced by the day-index, empties the
+/// day-index, and drops the consolidated `MerchantRevenueHistory`. This is the
+/// same "removed" notion `prune_merchant_revenue_days` applies per day (index
+/// entry and bucket go together), extended to the whole merchant, so no revenue
+/// reader can observe pre-reset data afterwards:
+///
+/// - `get_merchant_revenue` -> 0
+/// - `get_merchant_revenue_summary` -> `(0, 0, 0, 0)`
+/// - `get_merchant_revenue_day` -> 0 for every day
+/// - `get_merchant_revenue_day_page` -> empty
+/// - `get_merchant_revenue_history` -> empty
+///
+/// `prune_merchant_revenue_days` stays intentionally partial: it removes only
+/// the requested day buckets and their index slots while retaining the
+/// per-charge history timeline, which carries no day association to prune.
+/// Documenting the two together is the point of the choice here — a reset is
+/// all-or-nothing, a prune is surgical.
+///
+/// The `PendingMerchantRevCount` counter is decremented when the merchant had a
+/// non-zero total, matching the increment done in `increment_revenue`.
 pub fn reset_merchant_revenue(env: &Env, merchant: &Address) {
     let current = get_merchant_revenue(env, merchant);
     if current > 0 {
@@ -286,13 +361,30 @@ pub fn reset_merchant_revenue(env: &Env, merchant: &Address) {
         .persistent()
         .extend_ttl(&key, 1555200, 1555200);
 
-    // Clear the day-index so repeated reset/prune cycles don't grow it unboundedly.
+    // Drop every per-day bucket referenced by the day-index before emptying it,
+    // so a single-day read cannot return pre-reset data.
     let index_key = DataKey::MerchantRevenueDayIndex(merchant.clone());
+    let index: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&index_key)
+        .unwrap_or_else(|| Vec::new(env));
+    for day in index.iter() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MerchantRevenueDay(merchant.clone(), day));
+    }
+
+    // Empty the day-index so repeated reset cycles don't grow it unboundedly.
     let empty: Vec<u64> = Vec::new(env);
     env.storage().persistent().set(&index_key, &empty);
     env.storage()
         .persistent()
         .extend_ttl(&index_key, 1555200, 1555200);
+
+    // Clear the consolidated history so summary readers (count/min/max) report
+    // the same cleared state as the cumulative total.
+    clear_revenue_history(env, merchant);
 }
 
 /// Extends the TTL of a specific merchant daily revenue bucket.
