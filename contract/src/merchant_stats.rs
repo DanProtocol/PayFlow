@@ -150,6 +150,32 @@ pub fn get_merchant_index_size(env: &Env) -> u32 {
         .unwrap_or(0u32)
 }
 
+/// Returns a bounded page of merchants in index order. Missing slots are
+/// skipped, and `offset` is an index slot rather than a result count.
+pub fn get_merchant_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
+    let size = get_merchant_index_size(env) as u64;
+    let cap = crate::caps::effective_page_size(Some(limit), crate::caps::MERCHANT_PAGE_SIZE);
+    let mut result = Vec::new(env);
+    let start = offset as u64;
+    if start >= size || cap == 0 {
+        return result;
+    }
+
+    let end = (start + cap as u64).min(size);
+    let mut slot = start;
+    while slot < end {
+        if let Some(merchant) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::MerchantIndex(slot as u32))
+        {
+            result.push_back(merchant);
+        }
+        slot += 1;
+    }
+    result
+}
+
 /// Indexes a merchant if not already indexed.
 pub fn index_merchant(env: &Env, merchant: &Address) {
     let known_key = DataKey::MerchantKnown(merchant.clone());

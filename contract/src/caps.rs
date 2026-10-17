@@ -43,6 +43,9 @@ pub const MAX_MERCHANT_SUB_COUNT_BATCH: u32 = 50;
 /// `BatchTooLarge`. All three use the same number, so it lives here.
 pub const SUBSCRIBER_PAGE_SIZE: u32 = 50;
 
+/// Page size cap for the full merchant-index reader (`get_merchant_page`).
+pub const MERCHANT_PAGE_SIZE: u32 = 50;
+
 /// Page size for per-day merchant revenue queries.
 pub const REVENUE_DAY_PAGE_SIZE: u32 = 30;
 
