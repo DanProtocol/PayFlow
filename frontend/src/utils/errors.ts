@@ -25,6 +25,8 @@
  *   14 MetadataLabelTooLong           30 ContractPausedError (dep.) 31 Reserved31 (reserved)
  *   15 AmountExceedsMaximum           32 InvalidRecipient
  *   16 SubscriptionNotActive          —
+ *   46 IntervalExceedsMaximum
+ *   47 FreezeReasonTooLong
  *
  * Codes 30 and 31 (deprecated / reserved) and 37 (catalog gap) are documented
  * and mapped, not dropped — see the inline notes at those codes below.
@@ -93,6 +95,8 @@ export const CONTRACT_ERRORS: Record<string, string> = {
   "error(contract, #44)": "Contract admin is already set.",
   // 45 `NoPendingAdmin` — `accept_admin` called with no staged transfer.
   "error(contract, #45)": "There is no pending admin transfer to accept.",
+  "error(contract, #46)": "Billing interval must not exceed 400 years.",
+  "error(contract, #47)": "Merchant freeze reason must be 128 bytes or fewer.",
 
   // ── Bare-code aliases ──────────────────────────────────────────────────────
   // For transports that surface just the number ("#18", "ContractError #18").

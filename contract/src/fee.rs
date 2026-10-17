@@ -184,11 +184,12 @@ fn accumulate_protocol_fees(env: &Env, amount: i128) {
 // (error #8) that clients and alerting already map.
 
 /// Transfers subscription charge amounts (fee to collector/merchant fee recipient, net to merchant).
-/// Returns the fee amount deducted from the gross subscription amount.
+/// Returns `(fee_amount, net)` so bookkeeping and events reuse the checked
+/// amounts transferred to the fee recipient and merchant.
 ///
 /// Panics with `InsufficientAllowance` when the contract's allowance over
 /// `user`'s tokens is below the **gross** `sub.amount`, before any transfer runs.
-pub fn transfer_subscription_charge(env: &Env, user: &Address, sub: &Subscription) -> i128 {
+pub fn transfer_subscription_charge(env: &Env, user: &Address, sub: &Subscription) -> (i128, i128) {
     // Preflight: one allowance check covering both legs (fee + net == gross).
     validation::check_allowance(env, user, &sub.token, sub.amount);
 
@@ -216,7 +217,7 @@ pub fn transfer_subscription_charge(env: &Env, user: &Address, sub: &Subscriptio
     let token_client = token::Client::new(env, &sub.token);
     token_client.transfer_from(&env.current_contract_address(), user, &sub.merchant, &net);
 
-    fee_amount
+    (fee_amount, net)
 }
 
 /// Transfers a pay-per-use amount (fee to collector/merchant fee recipient, net to `recipient`).

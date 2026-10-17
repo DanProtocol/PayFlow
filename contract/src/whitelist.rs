@@ -208,7 +208,7 @@ pub fn freeze(env: &Env, merchant: &Address, reason: Option<soroban_sdk::String>
 
     if let Some(r) = &reason {
         if r.len() > 128 {
-            env.panic_with_error(crate::errors::ContractError::MetadataLabelTooLong);
+            env.panic_with_error(crate::errors::ContractError::FreezeReasonTooLong);
         }
         let reason_key = DataKey::MerchantFreezeReason(merchant.clone());
         env.storage().persistent().set(&reason_key, r);

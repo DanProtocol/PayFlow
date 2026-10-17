@@ -92,14 +92,15 @@ pub fn publish_pay_per_use(env: &Env, user: &Address, merchant: &Address, amount
     );
 }
 
+/// Publishes the same checked net amount used for the merchant transfer and revenue.
 pub fn publish_charged(
     env: &Env,
     user: &Address,
     sub: &Subscription,
     fee_amount: i128,
+    net: i128,
     charged_at: u64,
 ) {
-    let net = sub.amount - fee_amount;
     env.events().publish(
         (Symbol::new(env, "charged"), user.clone()),
         ChargeEventData {
