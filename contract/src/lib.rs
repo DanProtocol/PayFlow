@@ -913,6 +913,32 @@ impl FlowPay {
 
     /// Resumes `user`'s paused subscription.
     ///
+    /// Clears the `paused` flag, allowing the next charge to proceed once the
+    /// interval elapses. Does **not** trigger an immediate charge.
+    ///
+    /// # Recovery Matrix
+    ///
+    /// The interaction between `resume`, `cancel`, and `re-subscribe` depends
+    /// on three overlapping clocks: interval, grace period, and pause expiry.
+    ///
+    /// | State                                      | Action         | Outcome                                          |
+    /// |--------------------------------------------|----------------|--------------------------------------------------|
+    /// | Paused, grace not lapsed, pause not expired| `resume`       | Success — subscription becomes chargeable again  |
+    /// | Paused, grace lapsed                       | `resume`       | Error: `ResumeGraceLapsed` (code 43)             |
+    /// | Paused, grace lapsed                       | `cancel`       | Success — always allowed                         |
+    /// | Paused, grace lapsed                       | `re-subscribe` | Success — restores chargeability with new params |
+    /// | Paused, pause expiry elapsed, grace not lapsed | Auto-resume on next charge | Subscription auto-resumes |
+    /// | Paused, pause expiry elapsed, grace not lapsed | `resume`    | Success (manual resume)                          |
+    /// | Legacy paused (`active=false`, pre-#1009)  | `resume`       | Success — backward compatible recovery           |
+    ///
+    /// **Key rules:**
+    /// - `cancel` is always allowed regardless of grace or pause state.
+    /// - `re-subscribe` restores chargeability even after grace has lapsed.
+    /// - `resume` is rejected if grace has lapsed to avoid false recovery signals.
+    /// - Auto-resume (via `try_auto_resume` on charge path) handles expired pause_until.
+    ///
+    /// See `docs/SUBSCRIBER-LIFECYCLE.md` and `grace.rs:19-22` for full details.
+    ///
     /// # Parameters
     ///
     /// - `user`: Subscriber address. Must authorize the call.
@@ -927,11 +953,13 @@ impl FlowPay {
     ///
     /// # Errors
     ///
-    /// Panics if no subscription exists or the subscription is inactive.
+    /// - `NoSubscriptionFound`: No subscription exists for this user.
+    /// - `SubscriptionInactive`: Subscription is cancelled (`active == false`).
+    /// - `ResumeGraceLapsed` (code 43): Grace period has elapsed; use `cancel` or `re-subscribe`.
     ///
     /// # Side Effects
     ///
-    /// Clears the subscription `paused` flag and emits `resumed`.
+    /// Clears the subscription `paused` flag, clears pause_expiry, extends TTL, and emits `resumed`.
     pub fn resume(env: Env, user: Address) {
         bump_instance_ttl(&env);
         user.require_auth();
