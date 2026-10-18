@@ -57,7 +57,11 @@ pub fn prune_charge_history(env: &Env, user: &Address) {
         .remove(&DataKey::ChargeHistory(user.clone()));
 }
 
-/// Returns the current TTL (in ledgers) of the ChargeHistory entry, or 0 if absent.
+/// ChargeHistory TTL helper.
+///
+/// - Test/testutils: real persistent TTL, or `0` if the key is absent.
+/// - Production: always `0`. Soroban does not expose `get_ttl()` on-chain;
+///   callers must not treat `0` as “expired” or as a measured remaining TTL.
 pub fn get_charge_history_ttl(_env: &Env, _user: &Address) -> u32 {
     #[cfg(any(test, feature = "testutils"))]
     {

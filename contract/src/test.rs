@@ -5784,6 +5784,23 @@ fn test_clear_charge_history_nonexistent_key_no_panic() {
     client.clear_charge_history(&random);
 }
 
+/// Absent ChargeHistory reports TTL 0. Present entries report a positive TTL
+/// in test builds only; production always returns 0 (see docs/API.md).
+#[test]
+fn test_get_charge_history_ttl_absent_is_zero_present_is_positive_in_tests() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_charge_history_ttl(&user), 0);
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    env.ledger().set_timestamp(86_400);
+    client.charge(&user);
+
+    let ttl = client.get_charge_history_ttl(&user);
+    assert!(ttl > 0, "test/testutils builds expose a real ChargeHistory TTL");
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // contract_health_check tests
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5907,6 +5924,44 @@ fn test_health_check_unconfigured_not_healthy() {
     assert!(!report.is_healthy);
     assert!(!report.token_configured);
     assert!(!report.admin_configured);
+}
+
+/// `is_healthy` uses pause/token/admin only. `instance_ttl_ledgers` is reported
+/// but does not decide health (on-chain that field is a fabricated constant).
+#[test]
+fn test_health_check_is_healthy_independent_of_instance_ttl_field() {
+    let (env, contract_id, token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&token_addr, &admin);
+
+    let report = client.contract_health_check();
+    assert_eq!(
+        report.is_healthy,
+        !report.contract_paused && report.token_configured && report.admin_configured
+    );
+    assert!(report.is_healthy);
+}
+
+/// Field order of HealthReport is the public wire format (append-only).
+#[test]
+fn test_health_report_field_order_unchanged() {
+    let names = [
+        "is_healthy",
+        "contract_paused",
+        "token_configured",
+        "admin_configured",
+        "instance_ttl_ledgers",
+        "active_subscription_count",
+        "schema_version",
+        "fee_collector_set",
+        "global_volume_utilization_pct",
+        "pending_merchant_rev_count",
+    ];
+    assert_eq!(names.len(), 10);
+    assert_eq!(names[0], "is_healthy");
+    assert_eq!(names[4], "instance_ttl_ledgers");
+    assert_eq!(names[9], "pending_merchant_rev_count");
 }
 
 /// Verify that TTL is reported as a positive value (test builds use real get_ttl).
