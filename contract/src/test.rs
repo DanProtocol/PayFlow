@@ -8504,7 +8504,8 @@ fn test_transfer_subscription_event_emitted() {
 
     client.transfer_subscription(&user, &new_user);
 
-    let mut seen_transfer_event = false;
+    let mut seen_detailed = false;
+    let mut seen_compact = false;
     for (_, topics, data) in env.events().all().iter() {
         let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
         if topic_symbol == Symbol::new(&env, "subscription_transferred") {
@@ -8518,14 +8519,19 @@ fn test_transfer_subscription_event_emitted() {
             assert_eq!(event_payload.1, 1_0000000);
             assert_eq!(event_payload.2, 86400);
             assert_eq!(event_payload.3, token_addr);
-            seen_transfer_event = true;
+            seen_detailed = true;
+        }
+        if topic_symbol == Symbol::new(&env, "sub_transferred") {
+            let topic_from: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            let new_addr: Address = data.try_into_val(&env).unwrap();
+            assert_eq!(topic_from, user);
+            assert_eq!(new_addr, new_user);
+            seen_compact = true;
         }
     }
 
-    assert!(
-        seen_transfer_event,
-        "expected a subscription_transferred event"
-    );
+    assert!(seen_detailed, "expected a subscription_transferred event");
+    assert!(seen_compact, "expected a sub_transferred event");
 }
 
 #[test]
