@@ -32,7 +32,14 @@ pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
 // off-chain parsers continue to recognise the original codes.
 // Renaming or reordering is a breaking change for all consumers.
 // The golden tests in test.rs lock this layout.
+
 /// The outcome for a single user in a batch_cancel call.
+///
+/// Variants are returned in-order, one per input address. Off-chain consumers
+/// (keepers, indexers) decode this enum from its u32 discriminant. When adding
+/// new variants ALWAYS append at the end so existing parsers continue to
+/// recognise the original codes (0–2). Renaming or reordering is a breaking
+/// change. See the ChargeResult comment above for the full rationale.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CancelResult {
@@ -42,6 +49,10 @@ pub enum CancelResult {
     NoSubscription,
     /// Subscription was already cancelled.
     AlreadyCancelled,
+    /// Subscription was paused; cancel succeeded but state was unusual.
+    PausedCancelled,
+    /// Subscription's merchant was frozen; cancel succeeded but state was unusual.
+    MerchantFrozen,
 }
 
 /// The outcome for a single user in a batch_charge call.
@@ -239,9 +250,21 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                 if !sub.active {
                     CancelResult::AlreadyCancelled
                 } else {
+                    // Check for unusual states before cancelling
+                    let was_paused = sub.paused;
+                    let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
+
                     crate::cancel_inner(env, &user);
                     crate::events::publish_cancelled(env, &user);
-                    CancelResult::Cancelled
+
+                    // Return distinct result codes for unusual state cancellations
+                    if merchant_frozen {
+                        CancelResult::MerchantFrozen
+                    } else if was_paused {
+                        CancelResult::PausedCancelled
+                    } else {
+                        CancelResult::Cancelled
+                    }
                 }
             }
         };
