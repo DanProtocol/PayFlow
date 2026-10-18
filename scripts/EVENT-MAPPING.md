@@ -36,6 +36,8 @@ CREATE TABLE events (
 | resume | `resumed` / `subscription_auto_resumed` | user_address | `event_name='resumed', address=user` |
 | transfer | `subscription_transferred` | from_user | `event_name='subscription_transferred', address=from_user, raw_data={to_user, ...}` |
 
+**Note:** The `cancelled` event is emitted by all cancellation paths (single cancel, batch_cancel). The `batch_cancel` function returns a `CancelResult` enum (discriminants 0-4) describing the outcome per user, but does not emit per-user events beyond the standard `cancelled` event.
+
 ### Charging & Pay-Per-Use
 
 | Event | Topic[0] | Topic[1] | Example Row | Alerting Relevance |
@@ -136,3 +138,37 @@ interface AlertPayload {
 ### Monitoring Dashboards
 - `scripts/subscriber-health-dashboard.ts` — Can query events to show subscription state changes
 - `scripts/watch-events.ts` — Real-time event stream for debugging
+
+## Return Value Enums
+
+### ChargeResult
+
+The `batch_charge()` function returns a `Vec<ChargeResult>` with one outcome per user address:
+
+| Discriminant | Variant | Meaning |
+|--------------|---------|---------|
+| 0 | Charged | Funds transferred successfully |
+| 1 | Skipped | Interval not elapsed yet |
+| 2 | NoSubscription | No subscription found |
+| 3 | Inactive | Subscription cancelled |
+| 4 | Paused | Subscription paused |
+| 5 | GracePeriodElapsed | Grace period expired |
+| 6 | AllowanceInsufficient | Allowance < gross amount |
+
+See `docs/charge-results.md` for wire encoding details.
+
+### CancelResult
+
+The `batch_cancel()` function returns a `Vec<CancelResult>` with one outcome per user address:
+
+| Discriminant | Variant | Meaning |
+|--------------|---------|---------|
+| 0 | Cancelled | Subscription cancelled successfully (normal case) |
+| 1 | NoSubscription | No subscription entry found |
+| 2 | AlreadyCancelled | Subscription was already inactive |
+| 3 | PausedCancelled | A paused (but active) subscription was cancelled |
+| 4 | MerchantFrozen | Subscription belongs to a frozen merchant and was cancelled |
+
+**Append-only invariant:** New variants must be appended at the end to preserve backward compatibility with off-chain parsers. See `docs/cancel-results.md` for complete wire encoding specification.
+
+**Usage:** Admins operating batch cancellations can use `PausedCancelled` and `MerchantFrozen` to identify unusual states that warrant review.

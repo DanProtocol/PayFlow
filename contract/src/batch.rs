@@ -33,6 +33,18 @@ pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
 // Renaming or reordering is a breaking change for all consumers.
 // The golden tests in test.rs lock this layout.
 /// The outcome for a single user in a batch_cancel call.
+///
+/// Each variant is encoded as a `u32` discriminant on the wire:
+///   Cancelled         = 0
+///   NoSubscription    = 1
+///   AlreadyCancelled  = 2
+///   PausedCancelled   = 3
+///   MerchantFrozen    = 4
+///
+/// **APPEND-ONLY INVARIANT:** New variants must always be appended at the end
+/// so existing off-chain parsers that know 0-2 continue to work.
+/// Renaming or reordering discriminants is a breaking change for all consumers.
+/// See `docs/cancel-results.md` for the complete wire encoding specification.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CancelResult {
@@ -42,6 +54,10 @@ pub enum CancelResult {
     NoSubscription,
     /// Subscription was already cancelled.
     AlreadyCancelled,
+    /// A paused (but active) subscription was cancelled.
+    PausedCancelled,
+    /// Subscription belongs to a frozen merchant and was cancelled.
+    MerchantFrozen,
 }
 
 /// The outcome for a single user in a batch_charge call.
@@ -239,9 +255,21 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                 if !sub.active {
                     CancelResult::AlreadyCancelled
                 } else {
+                    // Check for unusual states before cancelling
+                    let merchant_frozen = crate::whitelist::is_merchant_frozen(env, &sub.merchant);
+                    
+                    // Cancel regardless of state
                     crate::cancel_inner(env, &user);
                     crate::events::publish_cancelled(env, &user);
-                    CancelResult::Cancelled
+                    
+                    // Return appropriate result based on the state we observed
+                    if merchant_frozen {
+                        CancelResult::MerchantFrozen
+                    } else if sub.paused {
+                        CancelResult::PausedCancelled
+                    } else {
+                        CancelResult::Cancelled
+                    }
                 }
             }
         };
