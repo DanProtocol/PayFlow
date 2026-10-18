@@ -2217,6 +2217,11 @@ impl FlowPay {
         subscription_count::transfer_subscriber_index(&env, &user, &new_user);
         extend_subscription_ttl(&env, &new_user);
 
+        // Transfer per-user side tables to the new address
+        subscription_metadata::transfer_metadata(&env, &user, &new_user);
+        subscription_history::transfer_charge_history(&env, &user, &new_user);
+        referral::transfer_referral(&env, &user, &new_user);
+
         events::publish_subscription_transferred(&env, &user, &new_user);
         events::publish_subscription_transferred_detailed(&env, &user, &new_user, &sub);
     }
