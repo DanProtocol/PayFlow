@@ -6,6 +6,17 @@ This document provides a complete reference for all events emitted by the FlowPa
 
 > **Catalog version:** Synchronized with `contract/src/events.rs` as of 2026-08-27. All 40 `publish_*` helpers are documented below.
 
+## Permanent abbreviated topics
+
+These four topic strings are **intentional and permanent**. They are the public wire names. Do **not** expand or rename them during cleanup. Consumers must not assume a longer sibling name will be emitted instead; any rename requires a coordinated dual-emission migration.
+
+| Emitted topic | Event | Permanent? | Rationale |
+| --- | --- | --- | --- |
+| `max_wl_batch_size_set` | Max whitelist batch size changed (`publish_max_whitelist_batch_size_set`) | Yes | Historical short form next to `max_batch_size_set`; kept so existing indexers keep matching. |
+| `merch_hist_cleared` | Merchant revenue history cleared (`publish_merchant_history_cleared`) | Yes | Abbreviation shipped on the original helper; sibling prose names are documentation only. |
+| `upg_proposed` | WASM upgrade proposed (`publish_upgrade_proposed`) | Yes | Short topic used by watchers and playbooks; expanding it would break those filters. |
+| `upg_cancelled` | Pending WASM upgrade cancelled (`publish_upgrade_cancelled`) | Yes | Pair of `upg_proposed`; same abbreviated prefix is the on-chain name. |
+
 ---
 
 ## Table of Contents
@@ -430,6 +441,7 @@ Events related to admin operations.
 
 ### upg_proposed
 
+- **Compatibility**: topic spelling is **permanent** (see [Permanent abbreviated topics](#permanent-abbreviated-topics)). Do not rename to `upgrade_proposed`.
 - **Trigger**: WASM upgrade proposed (`propose_upgrade()`)
 - **Topic keys**: `["upg_proposed"]`
 - **Payload schema**: `new_wasm_hash: BytesN<32>`
@@ -465,6 +477,7 @@ Events related to admin operations.
 
 ### merch_hist_cleared
 
+- **Compatibility**: topic spelling is **permanent** (see [Permanent abbreviated topics](#permanent-abbreviated-topics)). Do not rename to `merchant_history_cleared`.
 - **Trigger**: `clear_merchant_revenue_history()`
 - **Topic keys**: `["merch_hist_cleared"]`
 - **Payload schema**: `merchant: Address`
