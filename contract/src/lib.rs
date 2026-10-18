@@ -997,10 +997,12 @@ impl FlowPay {
     ///
     /// # Side Effects
     ///
-    /// For every valid active subscription, sets `paused = true`, persists the
-    /// update, extends the subscription TTL, and emits a `subscription_paused`
-    /// event. Invalid (non-existent) and already-paused entries are silently
-    /// skipped. The contract pause flag does **not** block this call.
+    /// For every valid active unpaused subscription, sets `paused = true`,
+    /// writes `PauseExpiry = u64::MAX` (same indefinite freeze as `pause()`),
+    /// persists the update, extends TTL, and emits `subscription_paused`.
+    /// Invalid (non-existent) and already-paused entries are silently skipped;
+    /// already-paused rows keep their existing expiry and only get a TTL bump.
+    /// The contract pause flag does **not** block this call.
     pub fn batch_pause_subscriptions(env: Env, users: Vec<Address>) {
         admin::require_admin(&env);
 
@@ -1026,6 +1028,7 @@ impl FlowPay {
                 sub.paused = true;
 
                 env.storage().persistent().set(&key, &sub);
+                storage::set_pause_expiry(&env, &user, u64::MAX);
                 extend_subscription_ttl(&env, &user);
                 events::publish_subscription_paused(&env, &user);
             }

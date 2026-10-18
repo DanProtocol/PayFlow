@@ -4419,6 +4419,84 @@ fn test_batch_pause_subscriptions_rejects_more_than_twenty_five_accounts() {
 }
 
 #[test]
+fn test_batch_pause_subscriptions_fresh_pause_writes_indefinite_expiry() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    assert!(client.get_subscription(&user).unwrap().paused);
+    env.as_contract(&contract_id, || {
+        let expiry = storage::get_pause_expiry(&env, &user);
+        assert_eq!(expiry, Some(u64::MAX));
+    });
+}
+
+#[test]
+fn test_batch_pause_overrides_stale_bounded_expiry_and_blocks_auto_resume() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    env.as_contract(&contract_id, || {
+        storage::set_pause_expiry(&env, &user, 90_000);
+    });
+    assert!(!client.get_subscription(&user).unwrap().paused);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::get_pause_expiry(&env, &user), Some(u64::MAX));
+    });
+
+    env.ledger().set_timestamp(90_000);
+    let res = client.try_charge(&user);
+    assert!(res.is_err());
+
+    let sub = client.get_subscription(&user).unwrap();
+    assert!(sub.paused);
+    assert_eq!(count_user_events(&env, "subscription_auto_resumed", &user), 0);
+}
+
+#[test]
+fn test_batch_pause_already_paused_keeps_existing_expiry() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    client.pause_until(&user, &300_000);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    assert!(client.get_subscription(&user).unwrap().paused);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::get_pause_expiry(&env, &user), Some(300_000));
+        assert!(env
+            .storage()
+            .persistent()
+            .has(&DataKey::PauseExpiry(user.clone())));
+    });
+    assert_eq!(count_user_events(&env, "subscription_paused", &user), 0);
+}
+
+#[test]
 fn test_upgrade_event_emitted() {
     let (env, contract_id, token_addr, _user, _merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
