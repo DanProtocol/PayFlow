@@ -167,7 +167,7 @@ const PayPerUseForm = forwardRef<HTMLInputElement, PayPerUseFormProps>(
           return;
         }
       }
-      const stroops = BigInt(Math.round(parseFloat(amount) * 10_000_000));
+      const stroops = BigInt(Math.round(parseFloat(amount) * STROOPS_PER_XLM));
       // Extra guard: re-check before wallet prompt
       if (remaining !== null && stroops > remaining) {
         setError(

@@ -4419,6 +4419,84 @@ fn test_batch_pause_subscriptions_rejects_more_than_twenty_five_accounts() {
 }
 
 #[test]
+fn test_batch_pause_subscriptions_fresh_pause_writes_indefinite_expiry() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    assert!(client.get_subscription(&user).unwrap().paused);
+    env.as_contract(&contract_id, || {
+        let expiry = storage::get_pause_expiry(&env, &user);
+        assert_eq!(expiry, Some(u64::MAX));
+    });
+}
+
+#[test]
+fn test_batch_pause_overrides_stale_bounded_expiry_and_blocks_auto_resume() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    env.as_contract(&contract_id, || {
+        storage::set_pause_expiry(&env, &user, 90_000);
+    });
+    assert!(!client.get_subscription(&user).unwrap().paused);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::get_pause_expiry(&env, &user), Some(u64::MAX));
+    });
+
+    env.ledger().set_timestamp(90_000);
+    let res = client.try_charge(&user);
+    assert!(res.is_err());
+
+    let sub = client.get_subscription(&user).unwrap();
+    assert!(sub.paused);
+    assert_eq!(count_user_events(&env, "subscription_auto_resumed", &user), 0);
+}
+
+#[test]
+fn test_batch_pause_already_paused_keeps_existing_expiry() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &user);
+    });
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    client.pause_until(&user, &300_000);
+
+    let mut users = Vec::new(&env);
+    users.push_back(user.clone());
+    client.batch_pause_subscriptions(&users);
+
+    assert!(client.get_subscription(&user).unwrap().paused);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::get_pause_expiry(&env, &user), Some(300_000));
+        assert!(env
+            .storage()
+            .persistent()
+            .has(&DataKey::PauseExpiry(user.clone())));
+    });
+    assert_eq!(count_user_events(&env, "subscription_paused", &user), 0);
+}
+
+#[test]
 fn test_upgrade_event_emitted() {
     let (env, contract_id, token_addr, _user, _merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
@@ -5706,6 +5784,23 @@ fn test_clear_charge_history_nonexistent_key_no_panic() {
     client.clear_charge_history(&random);
 }
 
+/// Absent ChargeHistory reports TTL 0. Present entries report a positive TTL
+/// in test builds only; production always returns 0 (see docs/API.md).
+#[test]
+fn test_get_charge_history_ttl_absent_is_zero_present_is_positive_in_tests() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_charge_history_ttl(&user), 0);
+
+    client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
+    env.ledger().set_timestamp(86_400);
+    client.charge(&user);
+
+    let ttl = client.get_charge_history_ttl(&user);
+    assert!(ttl > 0, "test/testutils builds expose a real ChargeHistory TTL");
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // contract_health_check tests
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5829,6 +5924,44 @@ fn test_health_check_unconfigured_not_healthy() {
     assert!(!report.is_healthy);
     assert!(!report.token_configured);
     assert!(!report.admin_configured);
+}
+
+/// `is_healthy` uses pause/token/admin only. `instance_ttl_ledgers` is reported
+/// but does not decide health (on-chain that field is a fabricated constant).
+#[test]
+fn test_health_check_is_healthy_independent_of_instance_ttl_field() {
+    let (env, contract_id, token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&token_addr, &admin);
+
+    let report = client.contract_health_check();
+    assert_eq!(
+        report.is_healthy,
+        !report.contract_paused && report.token_configured && report.admin_configured
+    );
+    assert!(report.is_healthy);
+}
+
+/// Field order of HealthReport is the public wire format (append-only).
+#[test]
+fn test_health_report_field_order_unchanged() {
+    let names = [
+        "is_healthy",
+        "contract_paused",
+        "token_configured",
+        "admin_configured",
+        "instance_ttl_ledgers",
+        "active_subscription_count",
+        "schema_version",
+        "fee_collector_set",
+        "global_volume_utilization_pct",
+        "pending_merchant_rev_count",
+    ];
+    assert_eq!(names.len(), 10);
+    assert_eq!(names[0], "is_healthy");
+    assert_eq!(names[4], "instance_ttl_ledgers");
+    assert_eq!(names[9], "pending_merchant_rev_count");
 }
 
 /// Verify that TTL is reported as a positive value (test builds use real get_ttl).
@@ -6980,6 +7113,61 @@ fn test_top_merchants_limit_exceeded_panics() {
     let (env, contract_id, _token_addr, _user, _merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
     client.get_top_merchants_by_subs(&21u32);
+}
+
+/// Issue #1216: removing a merchant from the whitelist must unindex it so it
+/// leaves the top-merchants ranking, and re-adding it must re-index it.
+#[test]
+fn test_removed_merchant_leaves_top_ranking() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+    client.add_merchant(&m3);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u3 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u3, &m3, &1_0000000, &86400, &token_addr, &None, &None);
+
+    let top_before = client.get_top_merchants_by_subs(&10u32);
+    assert_eq!(top_before.len(), 3);
+
+    client.remove_merchant(&m2);
+
+    // The removed merchant is gone from the ranking...
+    let top_after = client.get_top_merchants_by_subs(&10u32);
+    assert_eq!(top_after.len(), 2);
+    for i in 0..top_after.len() {
+        let (addr, _count) = top_after.get(i).unwrap();
+        assert_ne!(addr, m2, "removed merchant must not be ranked");
+    }
+
+    // ...and from the full merchant index (swap-remove left no slot behind).
+    let page = client.get_merchant_page(&0u32, &50u32);
+    for i in 0..page.len() {
+        assert_ne!(page.get(i).unwrap(), m2, "removed merchant must leave the index");
+    }
+
+    // Re-adding re-indexes it and it reappears in the ranking.
+    client.add_merchant(&m2);
+    let top_readd = client.get_top_merchants_by_subs(&10u32);
+    let mut found = false;
+    for i in 0..top_readd.len() {
+        if top_readd.get(i).unwrap().0 == m2 {
+            found = true;
+        }
+    }
+    assert!(found, "re-added merchant must be re-indexed and ranked");
 }
 
 /// subscribe panics with IntervalTooShort when interval < default floor of 3600.
@@ -8316,7 +8504,8 @@ fn test_transfer_subscription_event_emitted() {
 
     client.transfer_subscription(&user, &new_user);
 
-    let mut seen_transfer_event = false;
+    let mut seen_detailed = false;
+    let mut seen_compact = false;
     for (_, topics, data) in env.events().all().iter() {
         let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
         if topic_symbol == Symbol::new(&env, "subscription_transferred") {
@@ -8330,14 +8519,19 @@ fn test_transfer_subscription_event_emitted() {
             assert_eq!(event_payload.1, 1_0000000);
             assert_eq!(event_payload.2, 86400);
             assert_eq!(event_payload.3, token_addr);
-            seen_transfer_event = true;
+            seen_detailed = true;
+        }
+        if topic_symbol == Symbol::new(&env, "sub_transferred") {
+            let topic_from: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            let new_addr: Address = data.try_into_val(&env).unwrap();
+            assert_eq!(topic_from, user);
+            assert_eq!(new_addr, new_user);
+            seen_compact = true;
         }
     }
 
-    assert!(
-        seen_transfer_event,
-        "expected a subscription_transferred event"
-    );
+    assert!(seen_detailed, "expected a subscription_transferred event");
+    assert!(seen_compact, "expected a sub_transferred event");
 }
 
 #[test]
@@ -14474,4 +14668,39 @@ fn test_prune_merchant_revenue_days_emits_event() {
     let payload: crate::events::MerchantRevenuePrunedEventData =
         data.try_into_val(&env).unwrap();
     assert_eq!(payload.removed_days, 1u32);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1215: reset is a full clear (total, buckets, index, history)
+// ─────────────────────────────────────────────────────────────
+
+/// After a reset, every revenue reader reports the same cleared state:
+/// cumulative total, summary, single-day read, day page and history.
+#[test]
+fn test_reset_merchant_revenue_full_clear_consistency() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let interval: u64 = 86400;
+    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+
+    env.ledger().with_mut(|l| l.timestamp += interval + 1);
+    client.charge(&user);
+    let day = env.ledger().timestamp() / 86400;
+
+    // Pre-reset the merchant has a live total, history and day bucket.
+    assert!(client.get_merchant_revenue(&merchant) > 0);
+    let (total_before, count_before, _, _) = client.get_merchant_revenue_summary(&merchant);
+    assert!(total_before > 0 && count_before > 0);
+    assert!(client.get_merchant_revenue_day(&merchant, &day) > 0);
+
+    client.reset_merchant_revenue(&merchant);
+
+    // Every reader now agrees on a cleared state.
+    assert_eq!(client.get_merchant_revenue(&merchant), 0);
+    assert_eq!(client.get_merchant_revenue_summary(&merchant), (0, 0, 0, 0));
+    assert_eq!(client.get_merchant_revenue_day(&merchant, &day), 0);
+    assert!(client.get_merchant_revenue_day_page(&merchant, &0u32, &30u32).is_empty());
+    assert!(client.get_merchant_revenue_history(&merchant, &10u32).is_empty());
 }

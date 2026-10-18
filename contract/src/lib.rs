@@ -223,9 +223,9 @@ pub struct HealthReport {
     pub contract_paused: bool,
     pub token_configured: bool,
     pub admin_configured: bool,
-    /// Approximate instance TTL in ledgers. On-chain, this is a hardcoded
-    /// lower-bound estimate (100_000) because Soroban does not expose
-    /// `get_ttl()` outside test builds. Do not treat as precise.
+    /// Placeholder TTL field. On-chain this is a hardcoded `100_000` because
+    /// Soroban does not expose `get_ttl()` outside test builds. Test/testutils
+    /// builds report the real instance TTL. Not an input to `is_healthy`.
     pub instance_ttl_ledgers: u32,
     pub active_subscription_count: u64,
     pub schema_version: u32,
@@ -997,10 +997,12 @@ impl FlowPay {
     ///
     /// # Side Effects
     ///
-    /// For every valid active subscription, sets `paused = true`, persists the
-    /// update, extends the subscription TTL, and emits a `subscription_paused`
-    /// event. Invalid (non-existent) and already-paused entries are silently
-    /// skipped. The contract pause flag does **not** block this call.
+    /// For every valid active unpaused subscription, sets `paused = true`,
+    /// writes `PauseExpiry = u64::MAX` (same indefinite freeze as `pause()`),
+    /// persists the update, extends TTL, and emits `subscription_paused`.
+    /// Invalid (non-existent) and already-paused entries are silently skipped;
+    /// already-paused rows keep their existing expiry and only get a TTL bump.
+    /// The contract pause flag does **not** block this call.
     pub fn batch_pause_subscriptions(env: Env, users: Vec<Address>) {
         admin::require_admin(&env);
 
@@ -1026,6 +1028,7 @@ impl FlowPay {
                 sub.paused = true;
 
                 env.storage().persistent().set(&key, &sub);
+                storage::set_pause_expiry(&env, &user, u64::MAX);
                 extend_subscription_ttl(&env, &user);
                 events::publish_subscription_paused(&env, &user);
             }
@@ -1837,9 +1840,17 @@ impl FlowPay {
         merchant_stats::get_merchant_sub_counts(&env, &merchants)
     }
 
-    /// Resets a merchant's cumulative revenue counter to zero.
-    /// Resets a merchant's cumulative revenue counter to zero.
-    /// Only the contract admin can call this.
+    /// Fully clears a merchant's revenue accounting. Only the contract admin can
+    /// call this.
+    ///
+    /// This is a *full* reset (Issue #1215): it zeroes the cumulative counter,
+    /// removes every per-day bucket, empties the day-index, and drops the
+    /// consolidated revenue history, so `get_merchant_revenue`,
+    /// `get_merchant_revenue_summary`, `get_merchant_revenue_day`,
+    /// `get_merchant_revenue_day_page`, and `get_merchant_revenue_history` all
+    /// agree on a cleared post-reset state. See
+    /// `merchant_stats::reset_merchant_revenue` for the full semantics and how
+    /// they relate to `prune_merchant_revenue_days`.
     ///
     /// Note on Merchant Revenue:
     /// Merchant revenue in PayFlow is non-custodial. Charges and pay-per-use payments
@@ -2047,7 +2058,7 @@ impl FlowPay {
             env.storage().instance().get_ttl()
         };
         #[cfg(not(any(test, feature = "testutils")))]
-        let instance_ttl_ledgers = 100_000; // at least 1 day of TTL remaining, used as default since get_ttl is not available on-chain
+        let instance_ttl_ledgers = 100_000; // placeholder: get_ttl is not available on-chain
 
         let active_subscription_count = subscription_count::get_active_count(&env);
         let schema_version = migration::get_schema_version(&env);
@@ -2070,11 +2081,9 @@ impl FlowPay {
 
         let pending_merchant_rev_count = merchant_stats::get_pending_merchant_rev_count(&env);
 
-        // Healthy when not paused, fully configured, and at least 1 day of TTL remaining (17_280 ledgers at ~5 s/ledger)
-        let is_healthy = !contract_paused
-            && token_configured
-            && admin_configured
-            && instance_ttl_ledgers > 17_280;
+        // Healthy when not paused and fully configured. Instance TTL is reported
+        // separately and is not part of this decision (on-chain it is a constant).
+        let is_healthy = !contract_paused && token_configured && admin_configured;
 
         HealthReport {
             is_healthy,
@@ -2102,7 +2111,9 @@ impl FlowPay {
         Self::clear_charge_history(env, user);
     }
 
-    /// Returns the current TTL (in ledgers) of the ChargeHistory entry, or 0 if absent.
+    /// Returns ChargeHistory TTL in ledgers in test/testutils builds.
+    /// On-chain always returns `0` because `get_ttl()` is unavailable; `0`
+    /// also means the entry is absent in test builds. Not a live production TTL.
     pub fn get_charge_history_ttl(env: Env, user: Address) -> u32 {
         subscription_history::get_charge_history_ttl(&env, &user)
     }
@@ -2133,7 +2144,16 @@ impl FlowPay {
     /// # Side Effects
     ///
     /// Moves the subscription struct to `new_user`, removes it from `user`,
-    /// refreshes TTL, and emits `sub_transferred` and `subscription_transferred`.
+    /// refreshes TTL, and emits both transfer events:
+    /// - `sub_transferred` (compact/legacy: topics `[sub_transferred, old_user]`,
+    ///   data = new_user) via `publish_subscription_transferred`
+    /// - `subscription_transferred` (detailed: topics
+    ///   `[subscription_transferred, from, to]`, data =
+    ///   `(merchant, amount, interval, token)`) via
+    ///   `publish_subscription_transferred_detailed`
+    /// Prefer `subscription_transferred` for new indexers; keep listening to
+    /// `sub_transferred` for existing compact consumers. Topics and payloads
+    /// are unchanged.
     pub fn transfer_subscription(env: Env, user: Address, new_user: Address) {
         ensure_contract_not_paused(&env);
         validation::require_valid_transfer_targets(&env, &user, &new_user);
@@ -2170,7 +2190,7 @@ impl FlowPay {
         extend_subscription_ttl(&env, &new_user);
 
         events::publish_subscription_transferred(&env, &user, &new_user);
-        events::emit_subscription_transferred(&env, &user, &new_user, &sub);
+        events::publish_subscription_transferred_detailed(&env, &user, &new_user, &sub);
     }
 
     // ─────────────────────────────────────────────────────────────
