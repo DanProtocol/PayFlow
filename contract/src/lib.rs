@@ -1837,9 +1837,17 @@ impl FlowPay {
         merchant_stats::get_merchant_sub_counts(&env, &merchants)
     }
 
-    /// Resets a merchant's cumulative revenue counter to zero.
-    /// Resets a merchant's cumulative revenue counter to zero.
-    /// Only the contract admin can call this.
+    /// Fully clears a merchant's revenue accounting. Only the contract admin can
+    /// call this.
+    ///
+    /// This is a *full* reset (Issue #1215): it zeroes the cumulative counter,
+    /// removes every per-day bucket, empties the day-index, and drops the
+    /// consolidated revenue history, so `get_merchant_revenue`,
+    /// `get_merchant_revenue_summary`, `get_merchant_revenue_day`,
+    /// `get_merchant_revenue_day_page`, and `get_merchant_revenue_history` all
+    /// agree on a cleared post-reset state. See
+    /// `merchant_stats::reset_merchant_revenue` for the full semantics and how
+    /// they relate to `prune_merchant_revenue_days`.
     ///
     /// Note on Merchant Revenue:
     /// Merchant revenue in PayFlow is non-custodial. Charges and pay-per-use payments

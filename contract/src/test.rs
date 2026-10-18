@@ -6982,6 +6982,61 @@ fn test_top_merchants_limit_exceeded_panics() {
     client.get_top_merchants_by_subs(&21u32);
 }
 
+/// Issue #1216: removing a merchant from the whitelist must unindex it so it
+/// leaves the top-merchants ranking, and re-adding it must re-index it.
+#[test]
+fn test_removed_merchant_leaves_top_ranking() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+    client.add_merchant(&m3);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u3 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u3, &m3, &1_0000000, &86400, &token_addr, &None, &None);
+
+    let top_before = client.get_top_merchants_by_subs(&10u32);
+    assert_eq!(top_before.len(), 3);
+
+    client.remove_merchant(&m2);
+
+    // The removed merchant is gone from the ranking...
+    let top_after = client.get_top_merchants_by_subs(&10u32);
+    assert_eq!(top_after.len(), 2);
+    for i in 0..top_after.len() {
+        let (addr, _count) = top_after.get(i).unwrap();
+        assert_ne!(addr, m2, "removed merchant must not be ranked");
+    }
+
+    // ...and from the full merchant index (swap-remove left no slot behind).
+    let page = client.get_merchant_page(&0u32, &50u32);
+    for i in 0..page.len() {
+        assert_ne!(page.get(i).unwrap(), m2, "removed merchant must leave the index");
+    }
+
+    // Re-adding re-indexes it and it reappears in the ranking.
+    client.add_merchant(&m2);
+    let top_readd = client.get_top_merchants_by_subs(&10u32);
+    let mut found = false;
+    for i in 0..top_readd.len() {
+        if top_readd.get(i).unwrap().0 == m2 {
+            found = true;
+        }
+    }
+    assert!(found, "re-added merchant must be re-indexed and ranked");
+}
+
 /// subscribe panics with IntervalTooShort when interval < default floor of 3600.
 #[test]
 #[should_panic]
@@ -14474,4 +14529,39 @@ fn test_prune_merchant_revenue_days_emits_event() {
     let payload: crate::events::MerchantRevenuePrunedEventData =
         data.try_into_val(&env).unwrap();
     assert_eq!(payload.removed_days, 1u32);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1215: reset is a full clear (total, buckets, index, history)
+// ─────────────────────────────────────────────────────────────
+
+/// After a reset, every revenue reader reports the same cleared state:
+/// cumulative total, summary, single-day read, day page and history.
+#[test]
+fn test_reset_merchant_revenue_full_clear_consistency() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let interval: u64 = 86400;
+    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+
+    env.ledger().with_mut(|l| l.timestamp += interval + 1);
+    client.charge(&user);
+    let day = env.ledger().timestamp() / 86400;
+
+    // Pre-reset the merchant has a live total, history and day bucket.
+    assert!(client.get_merchant_revenue(&merchant) > 0);
+    let (total_before, count_before, _, _) = client.get_merchant_revenue_summary(&merchant);
+    assert!(total_before > 0 && count_before > 0);
+    assert!(client.get_merchant_revenue_day(&merchant, &day) > 0);
+
+    client.reset_merchant_revenue(&merchant);
+
+    // Every reader now agrees on a cleared state.
+    assert_eq!(client.get_merchant_revenue(&merchant), 0);
+    assert_eq!(client.get_merchant_revenue_summary(&merchant), (0, 0, 0, 0));
+    assert_eq!(client.get_merchant_revenue_day(&merchant, &day), 0);
+    assert!(client.get_merchant_revenue_day_page(&merchant, &0u32, &30u32).is_empty());
+    assert!(client.get_merchant_revenue_history(&merchant, &10u32).is_empty());
 }
