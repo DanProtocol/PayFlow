@@ -29,7 +29,7 @@ import SubscriptionRepairPanel from "../components/admin/SubscriptionRepairPanel
 
 const VALID_USER = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
-describe("SubscriptionRepairPanel", () => {
+describe("AdminRepairPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 

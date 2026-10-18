@@ -1,5 +1,5 @@
 /**
- * Tests for the user-facing SubscriptionRepairPanel (TTL / archived-state variant).
+ * Tests for the subscriber-facing SubscriberRecoveryPanel (TTL / archived-state variant).
  *
  * This panel renders when a subscription's on-chain storage entry has been
  * archived by Stellar's state-expiry mechanism and guides the user through
@@ -60,7 +60,7 @@ function renderPanel(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("SubscriptionRepairPanel (TTL / archived state)", () => {
+describe("SubscriberRecoveryPanel (TTL / archived state)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: fee estimate resolves quickly

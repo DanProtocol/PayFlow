@@ -1,4 +1,15 @@
-import React, { useCallback, useRef, useState } from "react";
+/**
+ * AdminRepairPanel
+ *
+ * Contract-admin diagnostics panel for validating and repairing subscription
+ * data integrity issues. Mounted by AdminDashboard.
+ *
+ * Responsibilities:
+ *  - Validate on-chain subscription state against integrity rules
+ *  - Display structural inconsistencies in a human-readable format
+ *  - Execute repair_subscription transactions (admin-only)
+ *  - Show before/after state comparison
+ */
 import { StrKey } from "@stellar/stellar-sdk";
 import {
   buildRepairSubscriptionTx,
@@ -42,7 +53,7 @@ function ViolationList({ items, prefix }: { items: string[]; prefix: string }) {
   );
 }
 
-export default function SubscriptionRepairPanel({ adminKey, onSign, gatePassed = true }: Props) {
+export default function AdminRepairPanel({ adminKey, onSign, gatePassed = true }: Props) {
   const { isAdmin, adminAddress, loading: adminLoading, error: adminError } = useAdmin(adminKey);
   const { toasts, addToast, removeToast, pauseToast, resumeToast } = useToast();
   const repairTx = useTransaction();

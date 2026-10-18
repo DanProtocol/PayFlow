@@ -1,5 +1,5 @@
 /**
- * SubscriptionRepairPanel — skeleton / loading / empty / error / race tests.
+ * AdminRepairPanel — skeleton / loading / empty / error / race tests.
  *
  * The repair panel's loading state is driven by the `useAdmin` credential check
  * (adminLoading). Its "empty" state is the idle phase before any validation has
@@ -65,7 +65,7 @@ beforeEach(() => {
 
 // ─── Loading state ────────────────────────────────────────────────────────────
 
-describe("SubscriptionRepairPanel — loading state", () => {
+describe("AdminRepairPanel — loading state", () => {
   it("shows the AdminRepairSkeleton (aria-busy) while admin credentials are loading", () => {
     adminLoading();
     render(<SubscriptionRepairPanel adminKey="GADMIN123" onSign={vi.fn()} />);
@@ -100,7 +100,7 @@ describe("SubscriptionRepairPanel — loading state", () => {
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
-describe("SubscriptionRepairPanel — empty (idle) state", () => {
+describe("AdminRepairPanel — empty (idle) state", () => {
   it("shows the idle empty-state hint before any validation is run", () => {
     render(<SubscriptionRepairPanel adminKey="GADMIN123" onSign={vi.fn()} />);
 
@@ -142,7 +142,7 @@ describe("SubscriptionRepairPanel — empty (idle) state", () => {
 
 // ─── Error state ──────────────────────────────────────────────────────────────
 
-describe("SubscriptionRepairPanel — error state", () => {
+describe("AdminRepairPanel — error state", () => {
   it("shows the validation-error card with role=alert when RPC fails", async () => {
     vi.mocked(stellar.validateSubscription).mockRejectedValue(
       new Error("Contract call failed: host error")
@@ -213,7 +213,7 @@ describe("SubscriptionRepairPanel — error state", () => {
 
 // ─── Race / stale-response prevention ────────────────────────────────────────
 
-describe("SubscriptionRepairPanel — race / stale-response prevention", () => {
+describe("AdminRepairPanel — race / stale-response prevention", () => {
   it("discards a slow first validateSubscription when a second one completes first", async () => {
     // Request 1: slow — a manually-resolved promise
     // Request 2: fast — resolves immediately with a passing report
