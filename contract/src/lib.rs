@@ -2133,7 +2133,16 @@ impl FlowPay {
     /// # Side Effects
     ///
     /// Moves the subscription struct to `new_user`, removes it from `user`,
-    /// refreshes TTL, and emits `sub_transferred` and `subscription_transferred`.
+    /// refreshes TTL, and emits both transfer events:
+    /// - `sub_transferred` (compact/legacy: topics `[sub_transferred, old_user]`,
+    ///   data = new_user) via `publish_subscription_transferred`
+    /// - `subscription_transferred` (detailed: topics
+    ///   `[subscription_transferred, from, to]`, data =
+    ///   `(merchant, amount, interval, token)`) via
+    ///   `publish_subscription_transferred_detailed`
+    /// Prefer `subscription_transferred` for new indexers; keep listening to
+    /// `sub_transferred` for existing compact consumers. Topics and payloads
+    /// are unchanged.
     pub fn transfer_subscription(env: Env, user: Address, new_user: Address) {
         ensure_contract_not_paused(&env);
         validation::require_valid_transfer_targets(&env, &user, &new_user);
@@ -2170,7 +2179,7 @@ impl FlowPay {
         extend_subscription_ttl(&env, &new_user);
 
         events::publish_subscription_transferred(&env, &user, &new_user);
-        events::emit_subscription_transferred(&env, &user, &new_user, &sub);
+        events::publish_subscription_transferred_detailed(&env, &user, &new_user, &sub);
     }
 
     // ─────────────────────────────────────────────────────────────

@@ -346,9 +346,11 @@ Events related to subscription configuration changes.
 
 ### sub_transferred
 
-- **Trigger**: `transfer_subscription()` (legacy event)
+- **Trigger**: `transfer_subscription()` — compact/legacy event, always emitted first
+- **Helper**: `publish_subscription_transferred`
 - **Topic keys**: `["sub_transferred", old_user_address]`
 - **Payload schema**: `new_user: Address`
+- **Relationship**: Same transfer also emits `subscription_transferred` with a richer payload. Keep this topic for existing compact consumers; do not treat the two events as interchangeable.
 - **JSON example**:
   ```json
   {
@@ -359,9 +361,11 @@ Events related to subscription configuration changes.
 
 ### subscription_transferred
 
-- **Trigger**: `transfer_subscription()` (new event, emitted alongside `sub_transferred`)
+- **Trigger**: `transfer_subscription()` — detailed event, always emitted after `sub_transferred`
+- **Helper**: `publish_subscription_transferred_detailed`
 - **Topic keys**: `["subscription_transferred", from_address, to_address]`
 - **Payload schema**: `(merchant: Address, amount: i128, interval: u64, token: Address)`
+- **Consumer guidance**: Prefer this event for new indexers (from/to in topics plus merchant/amount/interval/token). The contract still emits `sub_transferred` as well; both names are permanent.
 - **JSON example**:
   ```json
   {
