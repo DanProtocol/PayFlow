@@ -223,9 +223,9 @@ pub struct HealthReport {
     pub contract_paused: bool,
     pub token_configured: bool,
     pub admin_configured: bool,
-    /// Approximate instance TTL in ledgers. On-chain, this is a hardcoded
-    /// lower-bound estimate (100_000) because Soroban does not expose
-    /// `get_ttl()` outside test builds. Do not treat as precise.
+    /// Placeholder TTL field. On-chain this is a hardcoded `100_000` because
+    /// Soroban does not expose `get_ttl()` outside test builds. Test/testutils
+    /// builds report the real instance TTL. Not an input to `is_healthy`.
     pub instance_ttl_ledgers: u32,
     pub active_subscription_count: u64,
     pub schema_version: u32,
@@ -2047,7 +2047,7 @@ impl FlowPay {
             env.storage().instance().get_ttl()
         };
         #[cfg(not(any(test, feature = "testutils")))]
-        let instance_ttl_ledgers = 100_000; // at least 1 day of TTL remaining, used as default since get_ttl is not available on-chain
+        let instance_ttl_ledgers = 100_000; // placeholder: get_ttl is not available on-chain
 
         let active_subscription_count = subscription_count::get_active_count(&env);
         let schema_version = migration::get_schema_version(&env);
@@ -2070,11 +2070,9 @@ impl FlowPay {
 
         let pending_merchant_rev_count = merchant_stats::get_pending_merchant_rev_count(&env);
 
-        // Healthy when not paused, fully configured, and at least 1 day of TTL remaining (17_280 ledgers at ~5 s/ledger)
-        let is_healthy = !contract_paused
-            && token_configured
-            && admin_configured
-            && instance_ttl_ledgers > 17_280;
+        // Healthy when not paused and fully configured. Instance TTL is reported
+        // separately and is not part of this decision (on-chain it is a constant).
+        let is_healthy = !contract_paused && token_configured && admin_configured;
 
         HealthReport {
             is_healthy,
@@ -2102,7 +2100,9 @@ impl FlowPay {
         Self::clear_charge_history(env, user);
     }
 
-    /// Returns the current TTL (in ledgers) of the ChargeHistory entry, or 0 if absent.
+    /// Returns ChargeHistory TTL in ledgers in test/testutils builds.
+    /// On-chain always returns `0` because `get_ttl()` is unavailable; `0`
+    /// also means the entry is absent in test builds. Not a live production TTL.
     pub fn get_charge_history_ttl(env: Env, user: Address) -> u32 {
         subscription_history::get_charge_history_ttl(&env, &user)
     }
