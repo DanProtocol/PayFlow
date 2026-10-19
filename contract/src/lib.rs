@@ -2108,11 +2108,7 @@ impl FlowPay {
         let window: Option<GlobalVolumeWindow> =
             env.storage().instance().get(&DataKey::GlobalVolumeWindow);
         let accumulated_volume = window.map(|w| w.accumulated_volume).unwrap_or(0);
-        let cap = env
-            .storage()
-            .instance()
-            .get(&DataKey::GlobalVolumeCapOverride)
-            .unwrap_or(GLOBAL_MAX_VOLUME_PER_HOUR);
+        let cap = effective_global_volume_cap(&env);
 
         let pct = if cap > 0 {
             ((accumulated_volume * 100) / cap) as u32
@@ -2274,11 +2270,7 @@ impl FlowPay {
         if new_cap <= 0 {
             env.panic_with_error(ContractError::InvalidVolumeCap);
         }
-        let old_cap: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GlobalVolumeCapOverride)
-            .unwrap_or(GLOBAL_MAX_VOLUME_PER_HOUR);
+        let old_cap: i128 = effective_global_volume_cap(&env);
         env.storage()
             .instance()
             .set(&DataKey::GlobalVolumeCapOverride, &new_cap);
@@ -2641,8 +2633,8 @@ pub(crate) fn check_and_update_global_volume(env: &Env, amount: i128) {
 
 /// Returns the effective global hourly volume cap, reading the admin override
 /// if set, otherwise the compile-time constant. Shared by `get_global_volume_cap`,
-/// `get_contract_config`, and `check_and_update_global_volume` so enforcement
-/// and reporting agree.
+/// `get_contract_config`, `check_and_update_global_volume`, `contract_health_check`,
+/// and `set_global_volume_cap` so enforcement and reporting agree.
 pub(crate) fn effective_global_volume_cap(env: &Env) -> i128 {
     env.storage()
         .instance()

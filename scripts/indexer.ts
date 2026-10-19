@@ -21,7 +21,9 @@
  *     to charge due to insufficient subscriber allowance. This is the primary
  *     signal for charge failures that should trigger alerts (see
  *     scripts/alert-failed-charges.ts).
- *   - charged: Successful charge (topic[0]='charged', topic[1]=user_address)
+ *   - charged: Successful charge (topic[0]='charged', topic[1]=user_address).
+ *     Carries merchant, gross, fee, net, charged_at, ledger_sequence, and
+ *     paid_to (Option<Address> fee destination), preserved in raw_data.
  *   - subscribed, cancelled, paused, resumed: Subscription lifecycle events
  *   - trial_extended, grace_period_*: Policy management events
  *

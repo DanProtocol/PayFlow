@@ -450,6 +450,134 @@ fn test_charge_routes_net_to_custom_recipient() {
     assert_eq!(token.balance(&collector) - collector_before, 0);
 }
 
+#[test]
+fn test_charge_event_records_paid_to_global_collector() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let collector = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+    client.propose_fee(&collector, &500);
+    client.commit_fee(); // 5%
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 500_0000);
+            assert_eq!(event_data.paid_to, Some(collector.clone()));
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with global collector");
+}
+
+#[test]
+fn test_charge_event_records_paid_to_merchant_fee_recipient_override() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let collector = Address::generate(&env);
+    let recipient_override = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+    client.propose_fee(&collector, &500);
+    client.commit_fee(); // 5%
+
+    // Configure custom fee recipient for the merchant
+    client.set_merchant_fee_recipient(&merchant, &recipient_override);
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 500_0000);
+            assert_eq!(event_data.paid_to, Some(recipient_override.clone()));
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with merchant override fee recipient");
+}
+
+#[test]
+fn test_charge_event_records_paid_to_none_when_fee_is_zero() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 0);
+            assert_eq!(event_data.paid_to, None);
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with None paid_to");
+}
+
 // ─────────────────────────────────────────────
 // CONTRACT-802: gross-allowance preflight before the two-leg fee transfer
 // ─────────────────────────────────────────────
@@ -13739,6 +13867,160 @@ fn test_get_contract_config_reports_effective_cap() {
     client.set_global_volume_cap(&new_cap);
     let config = client.get_contract_config();
     assert_eq!(config.global_volume_cap, new_cap);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Issue #1240: Global volume cap boundary cases, rollover & unset state
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_global_volume_cap_exact_boundary_succeeds_default() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // No override configured: effective cap is compile-time default
+    assert_eq!(client.get_global_volume_cap(), GLOBAL_MAX_VOLUME_PER_HOUR);
+
+    // Exactly reaching the default cap must succeed
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, GLOBAL_MAX_VOLUME_PER_HOUR);
+    });
+
+    let (accumulated, _) = client.get_global_volume_window();
+    assert_eq!(accumulated, GLOBAL_MAX_VOLUME_PER_HOUR);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_cap_exceeded_by_one_stroop_fails_default() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+
+    // Reaching exactly cap first, then exceeding by 1 stroop must panic with GlobalVolumeExceeded (#28)
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, GLOBAL_MAX_VOLUME_PER_HOUR);
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+fn test_global_volume_cap_exact_boundary_succeeds_with_override() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let custom_cap: i128 = 200_0000000;
+    client.set_global_volume_cap(&custom_cap);
+    assert_eq!(client.get_global_volume_cap(), custom_cap);
+
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, custom_cap);
+    });
+
+    let (accumulated, _) = client.get_global_volume_window();
+    assert_eq!(accumulated, custom_cap);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_cap_exceeded_by_one_stroop_fails_with_override() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let custom_cap: i128 = 200_0000000;
+    client.set_global_volume_cap(&custom_cap);
+
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, custom_cap);
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_window_no_rollover_one_second_before_hour() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let cap: i128 = 100_0000000;
+    client.set_global_volume_cap(&cap);
+
+    let start_time = env.ledger().timestamp();
+
+    // Fill current window completely to the cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+
+    // Exactly 1 second before rollover (start_time + HOUR_IN_SECONDS - 1)
+    env.ledger().with_mut(|l| {
+        l.timestamp = start_time + HOUR_IN_SECONDS - 1;
+    });
+
+    // Window must NOT have rolled over; adding 1 stroop must panic with GlobalVolumeExceeded (#28)
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+fn test_global_volume_window_rollover_at_exact_hour_boundary() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let cap: i128 = 100_0000000;
+    client.set_global_volume_cap(&cap);
+
+    let start_time = env.ledger().timestamp();
+
+    // Fill current window completely to the cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+    let (vol, win_start) = client.get_global_volume_window();
+    assert_eq!(vol, cap);
+    assert_eq!(win_start, start_time);
+
+    // Advance to exactly the hour boundary (start_time + HOUR_IN_SECONDS)
+    env.ledger().with_mut(|l| {
+        l.timestamp = start_time + HOUR_IN_SECONDS;
+    });
+
+    // Window rolls over: volume resets to 0 and accommodates up to cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+
+    let (vol_after, win_start_after) = client.get_global_volume_window();
+    assert_eq!(vol_after, cap);
+    assert_eq!(win_start_after, start_time + HOUR_IN_SECONDS);
+}
+
+#[test]
+fn test_contract_health_check_routes_through_effective_cap() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Initial state: default cap GLOBAL_MAX_VOLUME_PER_HOUR, 0 utilization
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 0);
+
+    // Accumulate volume equal to half of the default cap
+    let half_default = GLOBAL_MAX_VOLUME_PER_HOUR / 2;
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, half_default);
+    });
+
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 50);
+
+    // Set override cap to the current accumulated volume; utilization must become 100%
+    client.set_global_volume_cap(&half_default);
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 100);
 }
 
 // ─────────────────────────────────────────────────────────────────────

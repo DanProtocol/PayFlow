@@ -45,9 +45,11 @@ event; the distinction is in the return value discriminant. See `docs/cancel-res
 
 | Event | Topic[0] | Topic[1] | Example Row | Alerting Relevance |
 |-------|----------|----------|-------------|-------------------|
-| charge success | `charged` | user_address | `event_name='charged', address=user, amount=gross, fee_amount=fee, merchant=merchant` | ✓ Confirms successful charge |
+| charge success | `charged` | user_address | `event_name='charged', address=user, amount=gross, fee_amount=fee, merchant=merchant, raw_data={..., paid_to: fee_recipient}` | ✓ Confirms successful charge |
 | batch summary | `batch_charge_skips` | (none) | `event_name='batch_charge_skips', raw_data={total, charged, allowance_insufficient, ...}` | **✓ CHARGE FAILURE SIGNAL** |
 | pay-per-use | `pay_per_use` | user_address | `event_name='pay_per_use', address=user, amount=amount, merchant=merchant` | Instant payment (not batch) |
+
+> **Note on `charged` fee auditability (`paid_to`)**: `ChargeEventData` carries `paid_to: Option<Address>` as its trailing field, recording the fee recipient address (`MerchantFeeRecipient` if configured, otherwise the global `FeeCollector`, or `null` if no fee was transferred). This field is captured in SQLite in the `raw_data` JSON column for auditability and compliance reporting.
 
 ### Grace Period & Trial
 
