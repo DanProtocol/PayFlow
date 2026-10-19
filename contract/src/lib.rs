@@ -69,6 +69,8 @@ pub enum DataKey {
     WhitelistEnabled,
     WhitelistIndex(u32),
     WhitelistIndexSize,
+    // Reverse lookup of a merchant's whitelist slot, used for O(1) removal
+    WhitelistIndexSlot(Address),
     // Merchant freeze: blocks new subscriptions, independent of whitelist status
     MerchantFrozen(Address),
     MerchantFreezeReason(Address),
@@ -1819,7 +1821,12 @@ impl FlowPay {
         let grace = grace::get_grace_period(&env);
 
         let within_grace = if let Some(next) = next_charge {
-            now >= next && grace > 0 && now <= next.saturating_add(grace)
+            // Mirror is_charge_due semantics exactly:
+            // - when grace == 0 the charge is simply due (no grace window), so
+            //   within_grace is true whenever a charge is due.
+            // - when grace > 0 the subscriber is within the grace window when
+            //   now is between next and next + grace_period (inclusive).
+            now >= next && (grace == 0 || now <= next.saturating_add(grace))
         } else {
             false
         };

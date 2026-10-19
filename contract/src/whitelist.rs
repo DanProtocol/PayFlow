@@ -87,6 +87,13 @@ pub fn add_merchant(env: &Env, merchant: &Address) {
         .persistent()
         .extend_ttl(&index_key, 1555200, 1555200);
 
+    // Write reverse index so remove_merchant can look up the slot in O(1).
+    let slot_key = DataKey::WhitelistIndexSlot(merchant.clone());
+    env.storage().persistent().set(&slot_key, &size);
+    env.storage()
+        .persistent()
+        .extend_ttl(&slot_key, 1555200, 1555200);
+
     let size_key = DataKey::WhitelistIndexSize;
     env.storage().persistent().set(&size_key, &(size + 1));
     env.storage()
@@ -108,31 +115,78 @@ pub fn remove_merchant(env: &Env, merchant: &Address) {
 
     let size = get_whitelist_size(env);
     if size > 0 {
-        for i in 0..size {
-            let key = DataKey::WhitelistIndex(i);
-            if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
-                if addr == *merchant {
-                    let last_idx = size - 1;
-                    if i != last_idx {
-                        let last_key = DataKey::WhitelistIndex(last_idx);
-                        if let Some(last_addr) =
-                            env.storage().persistent().get::<_, Address>(&last_key)
-                        {
-                            env.storage().persistent().set(&key, &last_addr);
-                            env.storage()
-                                .persistent()
-                                .extend_ttl(&key, 1555200, 1555200);
+        // O(1) lookup via reverse index; fall back to full scan only for
+        // entries written before the WhitelistIndexSlot variant existed.
+        let slot_key = DataKey::WhitelistIndexSlot(merchant.clone());
+        let maybe_slot: Option<u32> = env.storage().persistent().get(&slot_key);
+        if let Some(i) = maybe_slot {
+            let last_idx = size - 1;
+            if i != last_idx {
+                // Swap the last entry into the vacated slot.
+                let last_key = DataKey::WhitelistIndex(last_idx);
+                if let Some(last_addr) =
+                    env.storage().persistent().get::<_, Address>(&last_key)
+                {
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::WhitelistIndex(i), &last_addr);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&DataKey::WhitelistIndex(i), 1555200, 1555200);
+                    // Update the reverse index for the moved merchant.
+                    let moved_slot_key = DataKey::WhitelistIndexSlot(last_addr);
+                    env.storage().persistent().set(&moved_slot_key, &i);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&moved_slot_key, 1555200, 1555200);
+                }
+            }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::WhitelistIndex(last_idx));
+            env.storage().persistent().remove(&slot_key);
+            let size_key = DataKey::WhitelistIndexSize;
+            env.storage().persistent().set(&size_key, &(size - 1));
+            env.storage()
+                .persistent()
+                .extend_ttl(&size_key, 1555200, 1555200);
+        } else {
+            // Legacy path: no reverse index entry — fall back to linear scan.
+            for i in 0..size {
+                let key = DataKey::WhitelistIndex(i);
+                if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
+                    if addr == *merchant {
+                        let last_idx = size - 1;
+                        if i != last_idx {
+                            let last_key = DataKey::WhitelistIndex(last_idx);
+                            if let Some(last_addr) =
+                                env.storage().persistent().get::<_, Address>(&last_key)
+                            {
+                                env.storage().persistent().set(&key, &last_addr);
+                                env.storage()
+                                    .persistent()
+                                    .extend_ttl(&key, 1555200, 1555200);
+                                // Also write the reverse index for the moved entry.
+                                let moved_slot_key =
+                                    DataKey::WhitelistIndexSlot(last_addr);
+                                env.storage().persistent().set(&moved_slot_key, &i);
+                                env.storage().persistent().extend_ttl(
+                                    &moved_slot_key,
+                                    1555200,
+                                    1555200,
+                                );
+                            }
                         }
+                        env.storage()
+                            .persistent()
+                            .remove(&DataKey::WhitelistIndex(last_idx));
+                        let size_key = DataKey::WhitelistIndexSize;
+                        env.storage().persistent().set(&size_key, &(size - 1));
+                        env.storage()
+                            .persistent()
+                            .extend_ttl(&size_key, 1555200, 1555200);
+                        break;
                     }
-                    env.storage()
-                        .persistent()
-                        .remove(&DataKey::WhitelistIndex(last_idx));
-                    let size_key = DataKey::WhitelistIndexSize;
-                    env.storage().persistent().set(&size_key, &(size - 1));
-                    env.storage()
-                        .persistent()
-                        .extend_ttl(&size_key, 1555200, 1555200);
-                    break;
                 }
             }
         }

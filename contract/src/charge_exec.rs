@@ -356,7 +356,7 @@ pub fn precheck_charge(
     if now < next {
         return Err(ChargeResult::Skipped);
     }
-    if grace_period > 0 && now > next + grace_period {
+    if grace_period > 0 && now > next.saturating_add(grace_period) {
         return Err(ChargeResult::GracePeriodElapsed);
     }
     Ok(())
