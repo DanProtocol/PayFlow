@@ -371,7 +371,7 @@ pub fn execute_charge(
     sub: &mut Subscription,
     now: u64,
 ) -> i128 {
-    let (fee_amount, net) = fee::transfer_subscription_charge(env, user, sub);
+    let (fee_amount, net, paid_to) = fee::transfer_subscription_charge(env, user, sub);
 
     crate::check_and_update_global_volume(env, sub.amount);
     merchant_stats::increment_revenue_with_daily(env, &sub.merchant, net);
@@ -380,7 +380,7 @@ pub fn execute_charge(
     env.storage().persistent().set(key, sub);
     extend_subscription_ttl(env, user);
     subscription_history::record_charge(env, user, now);
-    events::publish_charged(env, user, sub, fee_amount, net, now);
+    events::publish_charged(env, user, sub, fee_amount, net, now, paid_to);
 
     fee_amount
 }

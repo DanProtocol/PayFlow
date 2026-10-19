@@ -223,7 +223,8 @@ Events related to charges and payments.
     fee: i128,
     net: i128,
     charged_at: u64,
-    ledger_sequence: u32
+    ledger_sequence: u32,
+    paid_to: Option<Address>
   }
   ```
 - **JSON example**:
@@ -236,10 +237,12 @@ Events related to charges and payments.
       "fee": 500000,
       "net": 49500000,
       "charged_at": 1719388800,
-      "ledger_sequence": 12345
+      "ledger_sequence": 12345,
+      "paid_to": "GCOLLECTOR...XYZ"
     }
   }
   ```
+- **Fee destination (`paid_to`)**: Records the address receiving the protocol fee leg (`MerchantFeeRecipient` if configured for the merchant, otherwise the global `FeeCollector`). Appended at the end of `ChargeEventData` as `Option<Address>` for auditability; evaluates to `null` (`None`) when no fee is charged.
 
 ### batch_charge_skips
 
