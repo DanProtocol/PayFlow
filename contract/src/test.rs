@@ -6975,6 +6975,44 @@ fn test_top_merchants_tie_breaking_and_limit() {
 }
 
 #[test]
+fn test_top_merchants_ignores_same_merchant_resubscribe_inflation() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u3 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    // m1 gets one genuine subscriber who then churns on the same merchant.
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+    for _ in 0..4 {
+        client.subscribe(&u1, &m1, &3_0000000, &43200, &token_addr, &None, &None);
+    }
+
+    // m2 gets two genuine subscribers.
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u3, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+
+    assert_eq!(client.get_merchant_sub_count(&m1), 1);
+    assert_eq!(client.get_merchant_sub_count(&m2), 2);
+
+    let top = client.get_top_merchants_by_subs(&2u32);
+    assert_eq!(top.len(), 2);
+    assert_eq!(top.get(0).unwrap(), (m2.clone(), 2u32));
+    assert_eq!(top.get(1).unwrap(), (m1.clone(), 1u32));
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #20)")]
 fn test_top_merchants_limit_exceeded_panics() {
     let (env, contract_id, _token_addr, _user, _merchant) = setup();
@@ -9365,6 +9403,130 @@ fn test_merchant_sub_count_resubscribe_different_merchant() {
     );
     assert_eq!(client.get_merchant_sub_count(&merchant_a), 0);
     assert_eq!(client.get_merchant_sub_count(&merchant_b), 1);
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_no_inflation() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 1_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // Repeatedly re-subscribing to the same merchant while the subscription is
+    // already active must not inflate the merchant subscriber counter.
+    for _ in 0..5 {
+        client.subscribe(
+            &user,
+            &merchant,
+            &amount,
+            &interval,
+            &token_addr,
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+    }
+
+    // The global subscriber count was already guarded against the same
+    // inflation and must stay in lockstep with the merchant counter.
+    assert_eq!(client.get_subscriber_count(), 1);
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_does_not_rank_merchant() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+
+    // u1 churns on the same merchant; the merchant must not accumulate count.
+    for _ in 0..3 {
+        client.subscribe(&u1, &m1, &2_0000000, &43200, &token_addr, &None, &None);
+    }
+    assert_eq!(client.get_merchant_sub_count(&m1), 1);
+
+    // m2 has a single real subscriber and should out-rank m1's inflated count.
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_merchant_sub_count(&m2), 1);
+
+    let top = client.get_top_merchants_by_subs(&2u32);
+    assert_eq!(top.len(), 2);
+    // Tie at 1 sub each: index order (m1 added first) decides.
+    assert_eq!(top.get(0).unwrap(), (m1.clone(), 1u32));
+    assert_eq!(top.get(1).unwrap(), (m2.clone(), 1u32));
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_after_cancel_increments() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 1_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // Cancelling releases the slot, so re-subscribing to the same merchant
+    // counts again.
+    client.cancel(&user);
+    assert_eq!(client.get_merchant_sub_count(&merchant), 0);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // A second same-merchant re-subscribe is still a no-op for the counter.
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
 }
 
 #[test]

@@ -2462,6 +2462,14 @@ fn subscribe_inner(
     let existing = storage::get_subscription(env, &user);
     let should_increment = existing.as_ref().is_none_or(|s| !s.active);
 
+    // A re-subscribe to the *same* merchant while the existing subscription is
+    // still active is a no-op for the merchant subscriber counter: the user was
+    // already counted and must not be counted twice. Only a merchant *change*
+    // moves the count from the old merchant to the new one.
+    let merchant_changed = existing
+        .as_ref()
+        .is_some_and(|s| s.active && s.merchant != merchant);
+
     if let Some(ref existing_sub) = existing {
         if existing_sub.active && existing_sub.merchant != merchant {
             merchant_stats::decrement_subscriber_count(env, &existing_sub.merchant);
@@ -2493,7 +2501,13 @@ fn subscribe_inner(
         subscription_count::append_subscriber_index(env, &user);
     }
     referral::store_referral(env, &user, &referrer);
-    merchant_stats::increment_subscriber_count(env, &sub.merchant);
+    // Mirrors the decrement above: increment for a brand-new (or previously
+    // inactive) subscription, or when the user switched merchants. A
+    // same-merchant re-subscribe of an active subscription is skipped so
+    // `MerchantSubCount` cannot be inflated.
+    if should_increment || merchant_changed {
+        merchant_stats::increment_subscriber_count(env, &sub.merchant);
+    }
     events::publish_subscribed(env, &user, &sub);
 }
 
