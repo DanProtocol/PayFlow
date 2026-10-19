@@ -9496,7 +9496,9 @@ fn test_batch_cancel_handles_mixed_states_and_clears_referral() {
 
     assert_eq!(results.len(), 4);
     assert_eq!(results.get(0).unwrap(), CancelResult::Cancelled);
-    assert_eq!(results.get(1).unwrap(), CancelResult::Cancelled);
+    // user_b was paused: `batch_cancel` still cancels it but reports the
+    // distinct paused outcome.
+    assert_eq!(results.get(1).unwrap(), CancelResult::PausedCancelled);
     assert_eq!(results.get(2).unwrap(), CancelResult::AlreadyCancelled);
     assert_eq!(results.get(3).unwrap(), CancelResult::NoSubscription);
 
