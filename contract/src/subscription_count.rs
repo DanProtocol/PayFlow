@@ -170,7 +170,10 @@ pub fn clear_subscriber_index_entry(env: &Env, index: u64) -> Address {
         .unwrap_or_else(|| env.panic_with_error(ContractError::NoSubscriptionFound));
 
     if let Some(sub) = storage::get_subscription(env, &user) {
-        if sub.active {
+        // counted/listed: use !is_cancelled rather than sub.active so that
+        // legacy `paused && !active` rows (pre-#1009) are also treated as
+        // occupied slots that block clearing.
+        if !storage::is_cancelled(&sub) {
             env.panic_with_error(ContractError::CannotClearActiveSubscriber);
         }
     }

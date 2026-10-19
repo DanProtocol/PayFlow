@@ -434,6 +434,10 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
             None => CancelResult::NoSubscription,
             Some(sub) => {
                 if !sub.active {
+                    // sub.active required here: paused subscriptions must not be charged/acted upon —
+                    // detecting already-cancelled subscriptions uses sub.active, not is_cancelled,
+                    // because legacy `paused && !active` rows are also considered already-cancelled
+                    // for the purpose of this batch guard.
                     CancelResult::AlreadyCancelled
                 } else {
                     // Check for unusual states before cancelling

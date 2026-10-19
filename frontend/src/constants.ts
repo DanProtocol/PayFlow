@@ -1,3 +1,18 @@
+/** localStorage key under which the user's custom RPC URL is persisted. */
+export const CUSTOM_RPC_URL_KEY = "flowpay_custom_rpc_url";
+
+/** Read and parse the stored custom RPC URL. Returns null on missing/invalid. */
+export function readCustomRpcUrl(): string | null {
+  try {
+    const raw = localStorage.getItem(CUSTOM_RPC_URL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as string;
+    return parsed && parsed.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Stroops in 1 XLM (Number form — safe for display arithmetic). */
 export const STROOPS_PER_XLM = 10_000_000;
 /** Stroops in 1 XLM (BigInt form — required for precision-safe conversions). */
