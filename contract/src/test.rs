@@ -15151,6 +15151,28 @@ fn test_reset_merchant_revenue_full_clear_consistency() {
     assert!(client.get_merchant_revenue_history(&merchant, &10u32).is_empty());
 }
 
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1200: saturating grace-period math in precheck_charge
+// ─────────────────────────────────────────────────────────────
+
+/// Regression: batch_charge must complete per-user (not abort) when a
+/// subscriber has a near-u64::MAX grace_period and an extreme interval.
+/// Before the fix, the raw `next + grace_period` addition trapped on the
+/// host (overflow-checks = true), rolling back the entire transaction.
+#[test]
+fn test_batch_charge_survives_extreme_grace_period() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Set a grace period near u64::MAX / 2 (the admin ceiling in grace.rs).
+    let huge_grace: u64 = u64::MAX / 2;
+    client.propose_grace_period(&huge_grace);
+    client.commit_grace_period();
+
+    // Subscribe with a normal interval so the charge is due at timestamp 1.
+    let interval: u64 = 1;
 // ─────────────────────────────────────────────────────────────
 // Issue #1223: legacy `paused && !active` rows remain excluded
 // from get_active_subscriber_page (design invariant regression test)
@@ -15183,12 +15205,144 @@ fn test_legacy_paused_subscription_remains_listed() {
         &user,
         &merchant,
         &1_0000000,
+        &interval,
         &86400,
         &token_addr,
         &None,
         &None,
     );
 
+    // Advance past the interval so the charge is due.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+
+    // batch_charge must return a per-user result vector, not trap.
+    let mut users = soroban_sdk::Vec::new(&env);
+    users.push_back(user.clone());
+    let results = client.batch_charge(&users);
+
+    // Exactly one result, and it must be a successful charge (not an error).
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1219: O(1) remove_merchant with reverse whitelist index
+// ─────────────────────────────────────────────────────────────
+
+/// Regression: get_whitelist_page returns the same set before and after
+/// removal when the whitelist is large (exercises the O(1) path).
+#[test]
+fn test_remove_merchant_large_whitelist_page_consistent() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Add 20 merchants.
+    let mut merchants: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for _ in 0..20 {
+        let m = Address::generate(&env);
+        client.add_merchant(&m);
+        merchants.push_back(m);
+    }
+    assert_eq!(client.get_whitelist_size(), 20);
+
+    // Collect the full page before removal.
+    let before = client.get_whitelist_page(&0, &20);
+    assert_eq!(before.len(), 20);
+
+    // Remove a merchant from the middle to trigger a swap-remove.
+    let to_remove = merchants.get(10).unwrap();
+    client.remove_merchant(&to_remove);
+
+    assert_eq!(client.get_whitelist_size(), 19);
+    assert!(!client.is_merchant_whitelisted(&to_remove));
+
+    // The remaining page must contain every original merchant except the removed one.
+    let after = client.get_whitelist_page(&0, &20);
+    assert_eq!(after.len(), 19);
+    for m in after.iter() {
+        assert!(m != to_remove, "removed merchant must not appear in page");
+        assert!(client.is_merchant_whitelisted(&m));
+    }
+
+    // Also verify the first merchant (slot 0) is still reachable.
+    let first = merchants.get(0).unwrap();
+    assert!(client.is_merchant_whitelisted(&first));
+}
+
+/// Removing all merchants one-by-one must leave an empty whitelist with no
+/// stale index entries.
+#[test]
+fn test_remove_all_merchants_empties_whitelist() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let mut merchants: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for _ in 0..10 {
+        let m = Address::generate(&env);
+        client.add_merchant(&m);
+        merchants.push_back(m);
+    }
+
+    for m in merchants.iter() {
+        client.remove_merchant(&m);
+    }
+
+    assert_eq!(client.get_whitelist_size(), 0);
+    assert!(client.get_whitelist_page(&0, &10).is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1224: within_grace agrees with is_charge_due
+// ─────────────────────────────────────────────────────────────
+
+/// When grace_period == 0 (default), a healthy subscription that is charge-due
+/// must report within_grace == true, not false.
+#[test]
+fn test_subscription_health_within_grace_no_grace_period() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // No grace period configured (default = 0).
+    let interval: u64 = 3600;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Advance past the interval so a charge is due.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+
+    let health = client.get_subscription_health(&user);
+    assert!(health.charge_due, "charge must be due");
+    assert!(
+        health.within_grace,
+        "within_grace must agree with charge_due when grace_period == 0"
+    );
+}
+
+/// When grace_period > 0 and we are inside the grace window, both charge_due
+/// and within_grace must be true (existing behaviour must be preserved).
+#[test]
+fn test_subscription_health_within_grace_with_grace_period() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let grace: u64 = 7200;
+    let interval: u64 = 3600;
+    client.propose_grace_period(&grace);
+    client.commit_grace_period();
     // Sanity: user is in the active page before we mutate the row.
     let page_before = client.get_active_subscriber_page(&0u64, &10u32);
     assert!(page_before.contains(&user), "user must be listed before mutation");
@@ -15243,12 +15397,83 @@ fn test_cancelled_subscription_not_listed() {
         &user,
         &merchant,
         &1_0000000,
+        &interval,
         &86400,
         &token_addr,
         &None,
         &None,
     );
 
+    // Advance past interval but still inside grace window.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + grace / 2;
+    });
+
+    let health = client.get_subscription_health(&user);
+    assert!(health.charge_due, "charge must be due inside grace window");
+    assert!(health.within_grace, "within_grace must be true inside grace window");
+}
+
+/// When grace_period > 0 and we are past the grace window, both charge_due
+/// and within_grace must be false.
+#[test]
+fn test_subscription_health_past_grace_window() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let grace: u64 = 3600;
+    let interval: u64 = 3600;
+    client.propose_grace_period(&grace);
+    client.commit_grace_period();
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Advance past interval AND grace window.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + grace + 1;
+    });
+
+    let health = client.get_subscription_health(&user);
+    assert!(!health.charge_due, "charge must not be due after grace window");
+    assert!(!health.within_grace, "within_grace must be false after grace window");
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1226: no dead metadata_cleared publisher
+// ─────────────────────────────────────────────────────────────
+
+/// clear_metadata must emit exactly one metadata_cleared event with the
+/// structured MetadataClearedEventData payload (not a bare address).
+#[test]
+fn test_clear_metadata_emits_exactly_one_publisher() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let label = soroban_sdk::String::from_str(&env, "gold");
+    // set_metadata / clear_metadata are the public contract functions.
+    client.set_metadata(&user, &label);
+    client.clear_metadata(&user);
+
+    // Count events whose first topic symbol is "metadata_cleared".
+    let mut count = 0u32;
+    for (_, topics, _) in env.events().all().iter() {
+        if let Some(first) = topics.get(0) {
+            if let Ok(sym) = Symbol::try_from_val(&env, &first) {
+                if sym == Symbol::new(&env, "metadata_cleared") {
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(count, 1, "exactly one metadata_cleared event must be emitted");
     // Cancel through the normal path — active=false, paused=false.
     client.cancel(&user);
 

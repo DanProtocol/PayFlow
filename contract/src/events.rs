@@ -611,16 +611,6 @@ pub fn publish_whitelist_enabled(env: &Env, enabled: bool) {
         .publish((Symbol::new(env, "whitelist_enabled"),), enabled);
 }
 
-
-
-/// Publishes `metadata_cleared` event — called from `subscription_metadata::clear_metadata`.
-pub fn metadata_cleared(env: &Env, user: &Address) {
-    env.events().publish(
-        (Symbol::new(env, "metadata_cleared"), user.clone()),
-        user.clone(),
-    );
-}
-
 pub fn publish_merchant_withdrawal(env: &Env, merchant: &Address, amount: i128) {
     env.events().publish(
         (Symbol::new(env, "merchant_withdrawal"), merchant.clone()),
