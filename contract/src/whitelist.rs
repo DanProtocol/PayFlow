@@ -138,6 +138,8 @@ pub fn remove_merchant(env: &Env, merchant: &Address) {
         }
     }
 
+    merchant_stats::unindex_merchant(env, merchant);
+
     events::publish_merchant_removed(env, merchant);
     crate::fee::clear_merchant_fee_recipient(env, merchant);
 }

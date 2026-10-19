@@ -36,6 +36,11 @@ CREATE TABLE events (
 | resume | `resumed` / `subscription_auto_resumed` | user_address | `event_name='resumed', address=user` |
 | transfer | `subscription_transferred` | from_user | `event_name='subscription_transferred', address=from_user, raw_data={to_user, ...}` |
 
+**Note:** As of the latest contract version, `batch_cancel` distinguishes between
+routine cancels (`Cancelled`), paused subscription cancels (`PausedCancelled`),
+and merchant-frozen cancels (`MerchantFrozen`). All three emit the same `cancelled`
+event; the distinction is in the return value discriminant. See `docs/cancel-results.md`.
+
 ### Charging & Pay-Per-Use
 
 | Event | Topic[0] | Topic[1] | Example Row | Alerting Relevance |
@@ -62,6 +67,9 @@ CREATE TABLE events (
 | contract paused | `contract_paused` | (none) | `event_name='contract_paused'` |
 | contract unpaused | `contract_unpaused` | (none) | `event_name='contract_unpaused'` |
 | upgrade proposed | `upg_proposed` | (none) | `event_name='upg_proposed', raw_data={wasm_hash}` |
+| upgrade cancelled | `upg_cancelled` | (none) | `event_name='upg_cancelled'` |
+| max whitelist batch size | `max_wl_batch_size_set` | (none) | `event_name='max_wl_batch_size_set', raw_data={old, new}` |
+| merchant history cleared | `merch_hist_cleared` | merchant | `event_name='merch_hist_cleared', address=merchant` |
 | upgrade completed | `upgrade` | (none) | `event_name='upgrade'` |
 
 ## Charge Failure Alerting
@@ -136,3 +144,14 @@ interface AlertPayload {
 ### Monitoring Dashboards
 - `scripts/subscriber-health-dashboard.ts` — Can query events to show subscription state changes
 - `scripts/watch-events.ts` — Real-time event stream for debugging
+
+## Permanent abbreviated topics
+
+These four `event_name` / topic[0] strings are **permanent public names**. Do not expand them to match helper names or sibling topics. A rename would break indexer rows, query scripts, replay, alerts, and watchers unless every consumer is migrated together.
+
+| Topic | Meaning | Permanent? | Rationale |
+| --- | --- | --- | --- |
+| `max_wl_batch_size_set` | Max whitelist batch size updated | Yes | Short form beside `max_batch_size_set`; keep the emitted spelling. |
+| `merch_hist_cleared` | Merchant revenue history wiped | Yes | Original abbreviated topic; not interchangeable with a long name. |
+| `upg_proposed` | Two-step WASM upgrade proposed | Yes | Already consumed as `upg_proposed` in this mapping and ops docs. |
+| `upg_cancelled` | Pending WASM upgrade cancelled | Yes | Same `upg_` prefix as propose; that is the wire name. |

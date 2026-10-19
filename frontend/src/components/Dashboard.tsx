@@ -11,12 +11,14 @@ import {
   payWarningReason,
   subscriptionHealthBlocksPay,
   SubscriptionHealth,
+  isArchivedError,
 } from "../stellar";
 import { friendlyError } from "../utils/errors";
 import SubscriptionCard from "./SubscriptionCard";
 import SubscriptionCardSkeleton from "./Skeleton";
 import ErrorBoundary from "./ErrorBoundary";
 import ErrorRecovery from "./ErrorRecovery";
+import SubscriberRecoveryPanel from "./SubscriberRecoveryPanel";
 
 // Lazy-load SubscriptionHistory so it is excluded from the main chunk (Issue #445).
 const SubscriptionHistory = lazy(() => import("./SubscriptionHistory"));
@@ -61,7 +63,7 @@ export default function Dashboard({
   isPaused = false,
   isOffline = false,
 }: Props) {
-  const { subscription: sub, loading, refresh } = useSubscriptionSync(userKey, refreshTrigger);
+  const { subscription: sub, loading, error, refresh } = useSubscriptionSync(userKey, refreshTrigger);
   const { toasts, addToast, removeToast, pauseToast, resumeToast } = useToast();
   const { status: rpcStatus, latencyMs: rpcLatency, error: rpcError } = useRpcHealth();
   const { isMobile } = useResponsive();
@@ -198,9 +200,21 @@ export default function Dashboard({
         </div>
       )}
       {!sub ? (
-        <div className="card">
-          <p className="no-sub-text">No active subscription found.</p>
-        </div>
+        <>
+          {/* Show recovery panel if subscription is archived */}
+          {error && isArchivedError(error) ? (
+            <SubscriberRecoveryPanel
+              userKey={userKey}
+              subscriptionError={error}
+              onSign={onSign}
+              onRestored={refresh}
+            />
+          ) : (
+            <div className="card">
+              <p className="no-sub-text">No active subscription found.</p>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <SubscriptionCard

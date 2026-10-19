@@ -1,7 +1,7 @@
 /**
- * SubscriptionRepairPanel
+ * SubscriberRecoveryPanel
  *
- * User-facing panel shown when a subscription's on-chain persistent storage
+ * Subscriber-facing panel shown when a subscription's on-chain persistent storage
  * entry has been archived by Stellar's state-expiry (TTL) mechanism.
  *
  * Responsibilities:
@@ -27,7 +27,7 @@ import ToastContainer from "./Toast";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export interface SubscriptionRepairPanelProps {
+export interface SubscriberRecoveryPanelProps {
   /** Public key of the currently connected wallet. */
   userKey: string;
   /**
@@ -60,14 +60,14 @@ const FALLBACK_RESTORE_FEE_STROOPS = 500_000n; // ~0.05 XLM — conservative est
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function SubscriptionRepairPanel({
+export default function SubscriberRecoveryPanel({
   userKey,
   subscriberAddress,
   isArchived: isArchivedProp,
   subscriptionError,
   onRestored,
   onSign,
-}: SubscriptionRepairPanelProps) {
+}: SubscriberRecoveryPanelProps) {
   const target = subscriberAddress ?? userKey;
   const isOwner = userKey === target;
 

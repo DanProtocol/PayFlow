@@ -384,7 +384,6 @@ fn scenario_transfer_subscription_moves_subscription_and_index() {
 /// the rebinding fix lands; it should pass then, and the fix is expected to
 /// move each of these keys and clear the old address's copy.
 #[test]
-#[ignore = "transfer does not rebind metadata/history/referral yet (fix not in tree)"]
 fn scenario_transfer_subscription_rebinds_metadata_history_and_referral() {
     let (env, contract_id, token_addr, user_old, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);

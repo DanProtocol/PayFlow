@@ -403,7 +403,12 @@ pub fn publish_subscription_transferred(env: &Env, old_user: &Address, new_user:
     );
 }
 
-pub fn emit_subscription_transferred(env: &Env, from: &Address, to: &Address, sub: &Subscription) {
+pub fn publish_subscription_transferred_detailed(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    sub: &Subscription,
+) {
     env.events().publish(
         (
             Symbol::new(env, "subscription_transferred"),
