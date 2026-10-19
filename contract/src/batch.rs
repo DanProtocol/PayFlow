@@ -35,6 +35,17 @@ pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
 
 /// The outcome for a single user in a batch_cancel call.
 ///
+/// Each variant is encoded as a `u32` discriminant on the wire:
+///   Cancelled         = 0
+///   NoSubscription    = 1
+///   AlreadyCancelled  = 2
+///   PausedCancelled   = 3
+///   MerchantFrozen    = 4
+///
+/// **APPEND-ONLY INVARIANT:** New variants must always be appended at the end
+/// so existing off-chain parsers that know 0-2 continue to work.
+/// Renaming or reordering discriminants is a breaking change for all consumers.
+/// See `docs/cancel-results.md` for the complete wire encoding specification.
 /// Variants are returned in-order, one per input address. Off-chain consumers
 /// (keepers, indexers) decode this enum from its u32 discriminant. When adding
 /// new variants ALWAYS append at the end so existing parsers continue to
@@ -49,6 +60,9 @@ pub enum CancelResult {
     NoSubscription,
     /// Subscription was already cancelled.
     AlreadyCancelled,
+    /// A paused (but active) subscription was cancelled.
+    PausedCancelled,
+    /// Subscription belongs to a frozen merchant and was cancelled.
     /// Subscription was paused; cancel succeeded but state was unusual.
     PausedCancelled,
     /// Subscription's merchant was frozen; cancel succeeded but state was unusual.
@@ -441,6 +455,16 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                     CancelResult::AlreadyCancelled
                 } else {
                     // Check for unusual states before cancelling
+                    let merchant_frozen = crate::whitelist::is_merchant_frozen(env, &sub.merchant);
+                    
+                    // Cancel regardless of state
+                    crate::cancel_inner(env, &user);
+                    crate::events::publish_cancelled(env, &user);
+                    
+                    // Return appropriate result based on the state we observed
+                    if merchant_frozen {
+                        CancelResult::MerchantFrozen
+                    } else if sub.paused {
                     let was_paused = sub.paused;
                     let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
 
