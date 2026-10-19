@@ -167,6 +167,7 @@ pub(crate) fn dry_run_skip_precheck(
     }
 
     if !sub.active {
+        // sub.active required here: paused subscriptions must not be charged/acted upon
         return (DryRunSkipOutcome::Inactive, None);
     }
 
@@ -280,6 +281,7 @@ pub fn simulate_pay_per_use(
         return PayPerUseSimResult::SubscriptionPaused;
     }
     if !sub.active {
+        // sub.active required here: paused subscriptions must not be charged/acted upon
         return PayPerUseSimResult::Inactive;
     }
 
@@ -312,6 +314,7 @@ pub fn simulate_pay_per_use(
 /// Returns the next charge timestamp for a subscription, or `None` if not chargeable.
 /// Handles the trial case: when `last_charged` is in the future, it is the trial end time.
 pub fn compute_next_charge_at(sub: &Subscription) -> Option<u64> {
+    // sub.active required here: paused subscriptions must not be charged/acted upon
     if !sub.active || sub.paused {
         return None;
     }

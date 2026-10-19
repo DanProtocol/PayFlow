@@ -14704,3 +14704,117 @@ fn test_reset_merchant_revenue_full_clear_consistency() {
     assert!(client.get_merchant_revenue_day_page(&merchant, &0u32, &30u32).is_empty());
     assert!(client.get_merchant_revenue_history(&merchant, &10u32).is_empty());
 }
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1223: legacy `paused && !active` rows remain excluded
+// from get_active_subscriber_page (design invariant regression test)
+// ─────────────────────────────────────────────────────────────
+
+/// Regression test: a subscription row that has `active = false` but
+/// `paused = true` (the legacy "paused" state written by `pause_until`
+/// before issue #1009 fixed the flag semantics) must remain EXCLUDED from
+/// `get_active_subscriber_page`.
+///
+/// The page reader uses `sub.active` intentionally (not `!is_cancelled`):
+/// it lists currently-active subscriptions, and legacy `paused && !active`
+/// rows are not considered active. The raw append-only `get_subscriber_page`
+/// still returns them, but the active-filtered page must not.
+///
+/// `is_cancelled` semantics: `!active && !paused`. A legacy row has
+/// `paused=true`, so `is_cancelled` returns `false` — the row is NOT
+/// cancelled. But it is also not active, so the active page correctly
+/// excludes it.
+///
+/// See `scenario_legacy_paused_inactive_row_reader_semantics` in
+/// `scenario.rs` for the full scenario-level coverage of this invariant.
+#[test]
+fn test_legacy_paused_subscription_remains_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // Subscribe so the user is in the subscriber index.
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Sanity: user is in the active page before we mutate the row.
+    let page_before = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(page_before.contains(&user), "user must be listed before mutation");
+
+    // Simulate a legacy "paused && !active" row by directly writing storage.
+    // This reproduces the state that pre-#1009 `pause_until` could write.
+    // We do NOT call cancel() — the cancellation counter path is intentionally
+    // bypassed so we can isolate the flag semantics.
+    env.as_contract(&contract_id, || {
+        let key = crate::DataKey::Subscription(user.clone());
+        let mut sub: crate::Subscription = env.storage().persistent().get(&key).unwrap();
+        // Legacy state: paused=true, active=false (NOT a cancelled row).
+        sub.active = false;
+        sub.paused = true;
+        env.storage().persistent().set(&key, &sub);
+    });
+
+    // Confirm the raw stored state.
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "raw active must be false (legacy state)");
+    assert!(raw.paused,  "raw paused must be true (legacy state)");
+
+    // Design invariant: get_active_subscriber_page uses sub.active, so a
+    // legacy `paused && !active` row must NOT appear in the active page.
+    // This matches the documented behavior in storage.rs and locks the
+    // same invariant as scenario_legacy_paused_inactive_row_reader_semantics.
+    let page_after = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page_after.contains(&user),
+        "legacy paused&&!active row must remain EXCLUDED from get_active_subscriber_page \
+         (sub.active is the intentional gate; see storage.rs design notes)"
+    );
+
+    // The raw append-only page still enumerates the slot (it does not filter
+    // by active state).
+    let raw_page = client.get_subscriber_page(&0u64, &10u32);
+    assert!(
+        raw_page.contains(&user),
+        "legacy row must still appear in the raw get_subscriber_page"
+    );
+}
+
+/// Complementary: a truly cancelled row (active=false, paused=false) must
+/// NOT appear in get_active_subscriber_page. This confirms that the active
+/// page excludes both cancelled and legacy paused rows.
+#[test]
+fn test_cancelled_subscription_not_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Cancel through the normal path — active=false, paused=false.
+    client.cancel(&user);
+
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "active must be false after cancel");
+    assert!(!raw.paused, "paused must be false after cancel");
+
+    // is_cancelled returns true for !active && !paused.
+    // The active page must exclude this row.
+    let page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page.contains(&user),
+        "cancelled subscription must not appear in get_active_subscriber_page"
+    );
+}

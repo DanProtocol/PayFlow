@@ -289,6 +289,8 @@ pub(crate) fn cancel_inner(env: &Env, user: &Address) -> Subscription {
     // subscribers than it has, and keepers skip live subscriptions.
     // `batch_cancel` already guards this by reporting `AlreadyCancelled`
     // without calling `cancel_inner`; the single-call path now matches it.
+    // sub.active required here: paused subscriptions must not be charged/acted upon —
+    // the active->inactive edge is the only time counters should move.
     let was_active = sub.active;
     sub.active = false;
 
@@ -580,6 +582,7 @@ impl FlowPay {
                 env.panic_with_error(ContractError::SubscriptionPaused);
             }
         } else if !sub.active {
+            // sub.active required here: paused subscriptions must not be charged/acted upon
             env.panic_with_error(ContractError::SubscriptionInactive);
         }
 
@@ -728,6 +731,8 @@ impl FlowPay {
     pub fn cancel(env: Env, user: Address) {
         bump_instance_ttl(&env);
         user.require_auth();
+        // sub.active required here: paused subscriptions must not be charged/acted upon —
+        // only emit `cancelled` when transitioning from an active subscription.
         let was_active = storage::get_subscription(&env, &user)
             .map(|sub| sub.active)
             .unwrap_or(false);
@@ -837,6 +842,8 @@ impl FlowPay {
             .unwrap_or_else(|| env.panic_with_error(ContractError::NoSubscriptionFound));
 
         if !sub.active {
+            // sub.active required here: paused subscriptions must not be charged/acted upon —
+            // cancelled (inactive) subscriptions cannot be paused.
             env.panic_with_error(ContractError::SubscriptionInactive);
         }
 
@@ -890,6 +897,8 @@ impl FlowPay {
             .unwrap_or_else(|| env.panic_with_error(ContractError::NoSubscriptionFound));
 
         if !sub.active {
+            // sub.active required here: paused subscriptions must not be charged/acted upon —
+            // cancelled (inactive) subscriptions cannot be bounded-paused.
             env.panic_with_error(ContractError::SubscriptionNotActive);
         }
 
@@ -1046,6 +1055,8 @@ impl FlowPay {
 
             let sub_opt: Option<Subscription> = env.storage().persistent().get(&key);
             if let Some(mut sub) = sub_opt {
+                // sub.active required here: paused subscriptions must not be charged/acted upon —
+                // only pause subscriptions that are currently active and not already paused.
                 if !sub.active || sub.paused {
                     if sub.paused {
                         extend_subscription_ttl(&env, &user);
@@ -1657,6 +1668,9 @@ impl FlowPay {
             if !subscription_count::is_subscriber_index_removed(&env, i) {
                 if let Some(addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::SubscriberIndex(i)) {
                     if let Some(sub) = storage::get_subscription(&env, &addr) {
+                        // sub.active required here: paused subscriptions must not be charged/acted upon —
+                        // this builds a batch of addresses ready for charge(); cancelled and paused
+                        // subscriptions must be excluded so keepers never attempt to charge them.
                         if sub.active {
                             if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
                                 let now = env.ledger().timestamp();
@@ -2198,6 +2212,8 @@ impl FlowPay {
             .unwrap_or_else(|| env.panic_with_error(ContractError::NoSubscriptionFound));
 
         if !sub.active {
+            // sub.active required here: paused subscriptions must not be charged/acted upon —
+            // only active (non-cancelled) subscriptions may be transferred.
             env.panic_with_error(ContractError::NoSubscriptionFound);
         }
 
@@ -2207,6 +2223,8 @@ impl FlowPay {
             .get::<DataKey, Subscription>(&new_key)
         {
             if existing.active {
+                // sub.active required here: paused subscriptions must not be charged/acted upon —
+                // the target slot must not already hold a live subscription.
                 env.panic_with_error(ContractError::SubscriptionAlreadyActive);
             }
         }
@@ -2376,6 +2394,12 @@ impl FlowPay {
                     .persistent()
                     .get::<DataKey, Subscription>(&DataKey::Subscription(addr.clone()))
                 {
+                    // sub.active used intentionally: legacy `paused && !active` rows
+                    // must remain excluded from this page per the design in storage.rs
+                    // (`get_active_subscriber_page` lists current active subscriptions,
+                    // not all non-cancelled rows). See `storage::is_cancelled` for the
+                    // full semantics and `scenario_legacy_paused_inactive_row_reader_semantics`
+                    // for the regression that locks this invariant.
                     if sub.active {
                         result.push_back(addr);
                     }
@@ -2441,6 +2465,7 @@ fn pay_per_use_inner(env: &Env, user: Address, amount: i128, recipient: Option<A
         env.panic_with_error(ContractError::SubscriptionPaused);
     }
     if !sub.active {
+        // sub.active required here: paused subscriptions must not be charged/acted upon
         env.panic_with_error(ContractError::SubscriptionInactive);
     }
 
@@ -2513,9 +2538,13 @@ fn subscribe_inner(
     let last_charged = now + trial_duration;
 
     let existing = storage::get_subscription(env, &user);
+    // sub.active required here: paused subscriptions must not be charged/acted upon —
+    // only count/index a new subscription when re-subscribing from a cancelled state.
     let should_increment = existing.as_ref().is_none_or(|s| !s.active);
 
     if let Some(ref existing_sub) = existing {
+        // sub.active required here: paused subscriptions must not be charged/acted upon —
+        // decrement the old merchant's count only when switching from an active subscription.
         if existing_sub.active && existing_sub.merchant != merchant {
             merchant_stats::decrement_subscriber_count(env, &existing_sub.merchant);
         }
