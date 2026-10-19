@@ -372,8 +372,16 @@ mod tests {
     #[test]
     fn get_max_batch_size_delegates_to_caps() {
         let env = Env::default();
-        assert_eq!(get_max_batch_size(&env), crate::caps::get_max_batch_size(&env));
-        assert_eq!(get_max_batch_size(&env), MAX_BATCH_SIZE);
+        // Instance storage is only readable from inside a contract frame, so
+        // the delegation is asserted under `as_contract`.
+        let contract_id = env.register_contract(None, crate::FlowPay);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_max_batch_size(&env),
+                crate::caps::get_max_batch_size(&env)
+            );
+            assert_eq!(get_max_batch_size(&env), MAX_BATCH_SIZE);
+        });
     }
 
     /// Sanity: the guard list covers every variant the enum currently has.
