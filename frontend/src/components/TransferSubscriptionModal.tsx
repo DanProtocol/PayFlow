@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { StrKey } from "@stellar/stellar-sdk";
 import { buildTransferSubscriptionTx } from "../stellar";
 import { friendlyError } from "../utils/errors";
@@ -30,10 +30,10 @@ export default function TransferSubscriptionModal({ userKey, onSign, onClose, on
   const isDirty = targetAddress.trim() !== "" || checklist.some(Boolean);
   const confirmLeave = useDirtyPreroute(isDirty && !submitting);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     if (!confirmLeave()) return;
     onClose();
-  };
+  }, [confirmLeave, onClose]);
 
   useFocusTrap(modalRef, true, handleClose);
 
