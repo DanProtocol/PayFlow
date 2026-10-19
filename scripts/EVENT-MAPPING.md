@@ -36,6 +36,7 @@ CREATE TABLE events (
 | resume | `resumed` / `subscription_auto_resumed` | user_address | `event_name='resumed', address=user` |
 | transfer | `subscription_transferred` | from_user | `event_name='subscription_transferred', address=from_user, raw_data={to_user, ...}` |
 
+**Note:** The `cancelled` event is emitted by all cancellation paths (single cancel, batch_cancel). The `batch_cancel` function returns a `CancelResult` enum (discriminants 0-4) describing the outcome per user, but does not emit per-user events beyond the standard `cancelled` event.
 **Note:** As of the latest contract version, `batch_cancel` distinguishes between
 routine cancels (`Cancelled`), paused subscription cancels (`PausedCancelled`),
 and merchant-frozen cancels (`MerchantFrozen`). All three emit the same `cancelled`
@@ -45,9 +46,11 @@ event; the distinction is in the return value discriminant. See `docs/cancel-res
 
 | Event | Topic[0] | Topic[1] | Example Row | Alerting Relevance |
 |-------|----------|----------|-------------|-------------------|
-| charge success | `charged` | user_address | `event_name='charged', address=user, amount=gross, fee_amount=fee, merchant=merchant` | ✓ Confirms successful charge |
+| charge success | `charged` | user_address | `event_name='charged', address=user, amount=gross, fee_amount=fee, merchant=merchant, raw_data={..., paid_to: fee_recipient}` | ✓ Confirms successful charge |
 | batch summary | `batch_charge_skips` | (none) | `event_name='batch_charge_skips', raw_data={total, charged, allowance_insufficient, ...}` | **✓ CHARGE FAILURE SIGNAL** |
 | pay-per-use | `pay_per_use` | user_address | `event_name='pay_per_use', address=user, amount=amount, merchant=merchant` | Instant payment (not batch) |
+
+> **Note on `charged` fee auditability (`paid_to`)**: `ChargeEventData` carries `paid_to: Option<Address>` as its trailing field, recording the fee recipient address (`MerchantFeeRecipient` if configured, otherwise the global `FeeCollector`, or `null` if no fee was transferred). This field is captured in SQLite in the `raw_data` JSON column for auditability and compliance reporting.
 
 ### Grace Period & Trial
 
@@ -145,6 +148,39 @@ interface AlertPayload {
 - `scripts/subscriber-health-dashboard.ts` — Can query events to show subscription state changes
 - `scripts/watch-events.ts` — Real-time event stream for debugging
 
+## Return Value Enums
+
+### ChargeResult
+
+The `batch_charge()` function returns a `Vec<ChargeResult>` with one outcome per user address:
+
+| Discriminant | Variant | Meaning |
+|--------------|---------|---------|
+| 0 | Charged | Funds transferred successfully |
+| 1 | Skipped | Interval not elapsed yet |
+| 2 | NoSubscription | No subscription found |
+| 3 | Inactive | Subscription cancelled |
+| 4 | Paused | Subscription paused |
+| 5 | GracePeriodElapsed | Grace period expired |
+| 6 | AllowanceInsufficient | Allowance < gross amount |
+
+See `docs/charge-results.md` for wire encoding details.
+
+### CancelResult
+
+The `batch_cancel()` function returns a `Vec<CancelResult>` with one outcome per user address:
+
+| Discriminant | Variant | Meaning |
+|--------------|---------|---------|
+| 0 | Cancelled | Subscription cancelled successfully (normal case) |
+| 1 | NoSubscription | No subscription entry found |
+| 2 | AlreadyCancelled | Subscription was already inactive |
+| 3 | PausedCancelled | A paused (but active) subscription was cancelled |
+| 4 | MerchantFrozen | Subscription belongs to a frozen merchant and was cancelled |
+
+**Append-only invariant:** New variants must be appended at the end to preserve backward compatibility with off-chain parsers. See `docs/cancel-results.md` for complete wire encoding specification.
+
+**Usage:** Admins operating batch cancellations can use `PausedCancelled` and `MerchantFrozen` to identify unusual states that warrant review.
 ## Permanent abbreviated topics
 
 These four `event_name` / topic[0] strings are **permanent public names**. Do not expand them to match helper names or sibling topics. A rename would break indexer rows, query scripts, replay, alerts, and watchers unless every consumer is migrated together.

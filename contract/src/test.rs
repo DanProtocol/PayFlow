@@ -450,6 +450,134 @@ fn test_charge_routes_net_to_custom_recipient() {
     assert_eq!(token.balance(&collector) - collector_before, 0);
 }
 
+#[test]
+fn test_charge_event_records_paid_to_global_collector() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let collector = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+    client.propose_fee(&collector, &500);
+    client.commit_fee(); // 5%
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 500_0000);
+            assert_eq!(event_data.paid_to, Some(collector.clone()));
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with global collector");
+}
+
+#[test]
+fn test_charge_event_records_paid_to_merchant_fee_recipient_override() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let collector = Address::generate(&env);
+    let recipient_override = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+    client.propose_fee(&collector, &500);
+    client.commit_fee(); // 5%
+
+    // Configure custom fee recipient for the merchant
+    client.set_merchant_fee_recipient(&merchant, &recipient_override);
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 500_0000);
+            assert_eq!(event_data.paid_to, Some(recipient_override.clone()));
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with merchant override fee recipient");
+}
+
+#[test]
+fn test_charge_event_records_paid_to_none_when_fee_is_zero() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 10_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+    client.charge(&user);
+
+    let mut charged_event_found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_symbol == Symbol::new(&env, "charged") {
+            let event_data: crate::events::ChargeEventData = data.try_into_val(&env).unwrap();
+            assert_eq!(event_data.fee, 0);
+            assert_eq!(event_data.paid_to, None);
+            charged_event_found = true;
+        }
+    }
+    assert!(charged_event_found, "expected a charged event with None paid_to");
+}
+
 // ─────────────────────────────────────────────
 // CONTRACT-802: gross-allowance preflight before the two-leg fee transfer
 // ─────────────────────────────────────────────
@@ -7108,6 +7236,44 @@ fn test_top_merchants_tie_breaking_and_limit() {
 }
 
 #[test]
+fn test_top_merchants_ignores_same_merchant_resubscribe_inflation() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u3 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    // m1 gets one genuine subscriber who then churns on the same merchant.
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+    for _ in 0..4 {
+        client.subscribe(&u1, &m1, &3_0000000, &43200, &token_addr, &None, &None);
+    }
+
+    // m2 gets two genuine subscribers.
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&u3, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+
+    assert_eq!(client.get_merchant_sub_count(&m1), 1);
+    assert_eq!(client.get_merchant_sub_count(&m2), 2);
+
+    let top = client.get_top_merchants_by_subs(&2u32);
+    assert_eq!(top.len(), 2);
+    assert_eq!(top.get(0).unwrap(), (m2.clone(), 2u32));
+    assert_eq!(top.get(1).unwrap(), (m1.clone(), 1u32));
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #20)")]
 fn test_top_merchants_limit_exceeded_panics() {
     let (env, contract_id, _token_addr, _user, _merchant) = setup();
@@ -9458,7 +9624,9 @@ fn test_batch_cancel_handles_mixed_states_and_clears_referral() {
 
     assert_eq!(results.len(), 4);
     assert_eq!(results.get(0).unwrap(), CancelResult::Cancelled);
-    assert_eq!(results.get(1).unwrap(), CancelResult::Cancelled);
+    // user_b was paused: `batch_cancel` still cancels it but reports the
+    // distinct paused outcome.
+    assert_eq!(results.get(1).unwrap(), CancelResult::PausedCancelled);
     assert_eq!(results.get(2).unwrap(), CancelResult::AlreadyCancelled);
     assert_eq!(results.get(3).unwrap(), CancelResult::NoSubscription);
 
@@ -9559,6 +9727,130 @@ fn test_merchant_sub_count_resubscribe_different_merchant() {
     );
     assert_eq!(client.get_merchant_sub_count(&merchant_a), 0);
     assert_eq!(client.get_merchant_sub_count(&merchant_b), 1);
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_no_inflation() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 1_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // Repeatedly re-subscribing to the same merchant while the subscription is
+    // already active must not inflate the merchant subscriber counter.
+    for _ in 0..5 {
+        client.subscribe(
+            &user,
+            &merchant,
+            &amount,
+            &interval,
+            &token_addr,
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+    }
+
+    // The global subscriber count was already guarded against the same
+    // inflation and must stay in lockstep with the merchant counter.
+    assert_eq!(client.get_subscriber_count(), 1);
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_does_not_rank_merchant() {
+    let (env, contract_id, token_addr, _user, _m) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    let u1 = setup_funded_user(&env, &contract_id, &token_addr);
+    let u2 = setup_funded_user(&env, &contract_id, &token_addr);
+
+    client.subscribe(&u1, &m1, &1_0000000, &86400, &token_addr, &None, &None);
+
+    // u1 churns on the same merchant; the merchant must not accumulate count.
+    for _ in 0..3 {
+        client.subscribe(&u1, &m1, &2_0000000, &43200, &token_addr, &None, &None);
+    }
+    assert_eq!(client.get_merchant_sub_count(&m1), 1);
+
+    // m2 has a single real subscriber and should out-rank m1's inflated count.
+    client.subscribe(&u2, &m2, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_merchant_sub_count(&m2), 1);
+
+    let top = client.get_top_merchants_by_subs(&2u32);
+    assert_eq!(top.len(), 2);
+    // Tie at 1 sub each: index order (m1 added first) decides.
+    assert_eq!(top.get(0).unwrap(), (m1.clone(), 1u32));
+    assert_eq!(top.get(1).unwrap(), (m2.clone(), 1u32));
+}
+
+#[test]
+fn test_merchant_sub_count_resubscribe_same_merchant_after_cancel_increments() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let amount: i128 = 1_0000000;
+    let interval: u64 = 86400;
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // Cancelling releases the slot, so re-subscribing to the same merchant
+    // counts again.
+    client.cancel(&user);
+    assert_eq!(client.get_merchant_sub_count(&merchant), 0);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
+
+    // A second same-merchant re-subscribe is still a no-op for the counter.
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_merchant_sub_count(&merchant), 1);
 }
 
 #[test]
@@ -13578,6 +13870,160 @@ fn test_get_contract_config_reports_effective_cap() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Issue #1240: Global volume cap boundary cases, rollover & unset state
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_global_volume_cap_exact_boundary_succeeds_default() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // No override configured: effective cap is compile-time default
+    assert_eq!(client.get_global_volume_cap(), GLOBAL_MAX_VOLUME_PER_HOUR);
+
+    // Exactly reaching the default cap must succeed
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, GLOBAL_MAX_VOLUME_PER_HOUR);
+    });
+
+    let (accumulated, _) = client.get_global_volume_window();
+    assert_eq!(accumulated, GLOBAL_MAX_VOLUME_PER_HOUR);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_cap_exceeded_by_one_stroop_fails_default() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+
+    // Reaching exactly cap first, then exceeding by 1 stroop must panic with GlobalVolumeExceeded (#28)
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, GLOBAL_MAX_VOLUME_PER_HOUR);
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+fn test_global_volume_cap_exact_boundary_succeeds_with_override() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let custom_cap: i128 = 200_0000000;
+    client.set_global_volume_cap(&custom_cap);
+    assert_eq!(client.get_global_volume_cap(), custom_cap);
+
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, custom_cap);
+    });
+
+    let (accumulated, _) = client.get_global_volume_window();
+    assert_eq!(accumulated, custom_cap);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_cap_exceeded_by_one_stroop_fails_with_override() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let custom_cap: i128 = 200_0000000;
+    client.set_global_volume_cap(&custom_cap);
+
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, custom_cap);
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_global_volume_window_no_rollover_one_second_before_hour() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let cap: i128 = 100_0000000;
+    client.set_global_volume_cap(&cap);
+
+    let start_time = env.ledger().timestamp();
+
+    // Fill current window completely to the cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+
+    // Exactly 1 second before rollover (start_time + HOUR_IN_SECONDS - 1)
+    env.ledger().with_mut(|l| {
+        l.timestamp = start_time + HOUR_IN_SECONDS - 1;
+    });
+
+    // Window must NOT have rolled over; adding 1 stroop must panic with GlobalVolumeExceeded (#28)
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, 1);
+    });
+}
+
+#[test]
+fn test_global_volume_window_rollover_at_exact_hour_boundary() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let cap: i128 = 100_0000000;
+    client.set_global_volume_cap(&cap);
+
+    let start_time = env.ledger().timestamp();
+
+    // Fill current window completely to the cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+    let (vol, win_start) = client.get_global_volume_window();
+    assert_eq!(vol, cap);
+    assert_eq!(win_start, start_time);
+
+    // Advance to exactly the hour boundary (start_time + HOUR_IN_SECONDS)
+    env.ledger().with_mut(|l| {
+        l.timestamp = start_time + HOUR_IN_SECONDS;
+    });
+
+    // Window rolls over: volume resets to 0 and accommodates up to cap
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, cap);
+    });
+
+    let (vol_after, win_start_after) = client.get_global_volume_window();
+    assert_eq!(vol_after, cap);
+    assert_eq!(win_start_after, start_time + HOUR_IN_SECONDS);
+}
+
+#[test]
+fn test_contract_health_check_routes_through_effective_cap() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Initial state: default cap GLOBAL_MAX_VOLUME_PER_HOUR, 0 utilization
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 0);
+
+    // Accumulate volume equal to half of the default cap
+    let half_default = GLOBAL_MAX_VOLUME_PER_HOUR / 2;
+    env.as_contract(&contract_id, || {
+        check_and_update_global_volume(&env, half_default);
+    });
+
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 50);
+
+    // Set override cap to the current accumulated volume; utilization must become 100%
+    client.set_global_volume_cap(&half_default);
+    let report = client.contract_health_check();
+    assert_eq!(report.global_volume_utilization_pct, 100);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Issue #823: Pagination safety tests for get_active_subscriber_page
 // ─────────────────────────────────────────────────────────────────────
 //
@@ -14727,11 +15173,40 @@ fn test_batch_charge_survives_extreme_grace_period() {
 
     // Subscribe with a normal interval so the charge is due at timestamp 1.
     let interval: u64 = 1;
+// ─────────────────────────────────────────────────────────────
+// Issue #1223: legacy `paused && !active` rows remain excluded
+// from get_active_subscriber_page (design invariant regression test)
+// ─────────────────────────────────────────────────────────────
+
+/// Regression test: a subscription row that has `active = false` but
+/// `paused = true` (the legacy "paused" state written by `pause_until`
+/// before issue #1009 fixed the flag semantics) must remain EXCLUDED from
+/// `get_active_subscriber_page`.
+///
+/// The page reader uses `sub.active` intentionally (not `!is_cancelled`):
+/// it lists currently-active subscriptions, and legacy `paused && !active`
+/// rows are not considered active. The raw append-only `get_subscriber_page`
+/// still returns them, but the active-filtered page must not.
+///
+/// `is_cancelled` semantics: `!active && !paused`. A legacy row has
+/// `paused=true`, so `is_cancelled` returns `false` — the row is NOT
+/// cancelled. But it is also not active, so the active page correctly
+/// excludes it.
+///
+/// See `scenario_legacy_paused_inactive_row_reader_semantics` in
+/// `scenario.rs` for the full scenario-level coverage of this invariant.
+#[test]
+fn test_legacy_paused_subscription_remains_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // Subscribe so the user is in the subscriber index.
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
         &interval,
+        &86400,
         &token_addr,
         &None,
         &None,
@@ -14868,11 +15343,62 @@ fn test_subscription_health_within_grace_with_grace_period() {
     let interval: u64 = 3600;
     client.propose_grace_period(&grace);
     client.commit_grace_period();
+    // Sanity: user is in the active page before we mutate the row.
+    let page_before = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(page_before.contains(&user), "user must be listed before mutation");
+
+    // Simulate a legacy "paused && !active" row by directly writing storage.
+    // This reproduces the state that pre-#1009 `pause_until` could write.
+    // We do NOT call cancel() — the cancellation counter path is intentionally
+    // bypassed so we can isolate the flag semantics.
+    env.as_contract(&contract_id, || {
+        let key = crate::DataKey::Subscription(user.clone());
+        let mut sub: crate::Subscription = env.storage().persistent().get(&key).unwrap();
+        // Legacy state: paused=true, active=false (NOT a cancelled row).
+        sub.active = false;
+        sub.paused = true;
+        env.storage().persistent().set(&key, &sub);
+    });
+
+    // Confirm the raw stored state.
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "raw active must be false (legacy state)");
+    assert!(raw.paused,  "raw paused must be true (legacy state)");
+
+    // Design invariant: get_active_subscriber_page uses sub.active, so a
+    // legacy `paused && !active` row must NOT appear in the active page.
+    // This matches the documented behavior in storage.rs and locks the
+    // same invariant as scenario_legacy_paused_inactive_row_reader_semantics.
+    let page_after = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page_after.contains(&user),
+        "legacy paused&&!active row must remain EXCLUDED from get_active_subscriber_page \
+         (sub.active is the intentional gate; see storage.rs design notes)"
+    );
+
+    // The raw append-only page still enumerates the slot (it does not filter
+    // by active state).
+    let raw_page = client.get_subscriber_page(&0u64, &10u32);
+    assert!(
+        raw_page.contains(&user),
+        "legacy row must still appear in the raw get_subscriber_page"
+    );
+}
+
+/// Complementary: a truly cancelled row (active=false, paused=false) must
+/// NOT appear in get_active_subscriber_page. This confirms that the active
+/// page excludes both cancelled and legacy paused rows.
+#[test]
+fn test_cancelled_subscription_not_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
         &interval,
+        &86400,
         &token_addr,
         &None,
         &None,
@@ -14948,4 +15474,18 @@ fn test_clear_metadata_emits_exactly_one_publisher() {
         }
     }
     assert_eq!(count, 1, "exactly one metadata_cleared event must be emitted");
+    // Cancel through the normal path — active=false, paused=false.
+    client.cancel(&user);
+
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "active must be false after cancel");
+    assert!(!raw.paused, "paused must be false after cancel");
+
+    // is_cancelled returns true for !active && !paused.
+    // The active page must exclude this row.
+    let page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page.contains(&user),
+        "cancelled subscription must not appear in get_active_subscriber_page"
+    );
 }

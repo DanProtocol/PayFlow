@@ -20,6 +20,7 @@ pub struct ChargeEventData {
     pub net: i128,
     pub charged_at: u64,
     pub ledger_sequence: u32,
+    pub paid_to: Option<Address>,
 }
 
 #[soroban_sdk::contracttype]
@@ -100,6 +101,7 @@ pub fn publish_charged(
     fee_amount: i128,
     net: i128,
     charged_at: u64,
+    paid_to: Option<Address>,
 ) {
     env.events().publish(
         (Symbol::new(env, "charged"), user.clone()),
@@ -110,6 +112,7 @@ pub fn publish_charged(
             net,
             charged_at,
             ledger_sequence: env.ledger().sequence(),
+            paid_to,
         },
     );
 }
