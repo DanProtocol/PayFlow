@@ -43,6 +43,9 @@ pub const MAX_MERCHANT_SUB_COUNT_BATCH: u32 = 50;
 /// `BatchTooLarge`. All three use the same number, so it lives here.
 pub const SUBSCRIBER_PAGE_SIZE: u32 = 50;
 
+/// Page size cap for the full merchant-index reader (`get_merchant_page`).
+pub const MERCHANT_PAGE_SIZE: u32 = 50;
+
 /// Page size for per-day merchant revenue queries.
 pub const REVENUE_DAY_PAGE_SIZE: u32 = 30;
 
@@ -99,6 +102,10 @@ pub fn effective_page_size(requested: Option<u32>, cap: u32) -> u32 {
 
 /// Returns the effective max batch size from instance storage, defaulting to
 /// `DEFAULT_BATCH_SIZE` when no override has been configured.
+///
+/// This is the canonical reader for `DataKey::MaxBatchSize`; every other
+/// entrypoint (`batch.rs`, `lib.rs`) must delegate here rather than reading
+/// the key directly, so the single and batch readers can never disagree.
 pub fn get_max_batch_size(env: &soroban_sdk::Env) -> u32 {
     env.storage()
         .instance()

@@ -59,11 +59,11 @@ pub fn get_subscriber_index_size(env: &Env) -> u64 {
 }
 
 /// Returns the number of active subscribers for a given merchant.
+///
+/// Thin delegation to the canonical reader in `merchant_stats` so every
+/// reader of `DataKey::MerchantSubCount` goes through one module.
 pub fn get_merchant_sub_count(env: &Env, merchant: &Address) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::MerchantSubCount(merchant.clone()))
-        .unwrap_or(0u64)
+    crate::merchant_stats::get_merchant_subscriber_count(env, merchant)
 }
 
 /// Appends `user` to the next available slot in the subscriber index and increments the size.
@@ -170,7 +170,10 @@ pub fn clear_subscriber_index_entry(env: &Env, index: u64) -> Address {
         .unwrap_or_else(|| env.panic_with_error(ContractError::NoSubscriptionFound));
 
     if let Some(sub) = storage::get_subscription(env, &user) {
-        if sub.active {
+        // counted/listed: use !is_cancelled rather than sub.active so that
+        // legacy `paused && !active` rows (pre-#1009) are also treated as
+        // occupied slots that block clearing.
+        if !storage::is_cancelled(&sub) {
             env.panic_with_error(ContractError::CannotClearActiveSubscriber);
         }
     }

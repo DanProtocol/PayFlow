@@ -132,6 +132,8 @@ fn scenario_double_cancel_leaves_every_counter_identical() {
         "first cancel must drop exactly one active and one per-merchant \
          subscriber, and must leave the append-only index size alone"
     );
+    assert!(client.get_subscriber_at(&0).is_none());
+    assert_eq!(count_events(&env, "cancelled", &user_a), 1);
     assert_eq!(client.get_referrer(&user_b), Some(referrer.clone()));
 
     // The second cancel is the one under test. `cancel` is not re-entrant, so
@@ -144,6 +146,12 @@ fn scenario_double_cancel_leaves_every_counter_identical() {
         "double cancel moved an aggregate counter: ActiveCount, the subscriber \
          index size, the per-merchant totals or the merchant index all changed"
     );
+    assert!(client.get_subscriber_at(&0).is_none());
+    assert_eq!(
+        count_events(&env, "cancelled", &user_a),
+        1,
+        "a no-op cancel must not emit a duplicate cancelled event"
+    );
 
     // The subscription itself is unchanged, and the referrer of a *different*
     // user was not collateral damage.
@@ -152,6 +160,50 @@ fn scenario_double_cancel_leaves_every_counter_identical() {
     assert!(!sub.paused);
     assert_eq!(client.get_referrer(&user_b), Some(referrer.clone()));
     assert_eq!(client.get_merchant_sub_count(&merchant_b), 1);
+}
+
+/// Legacy pause_until rows had `paused && !active`; they remain in the raw
+/// append-only index but are absent from active counts and active readers.
+#[test]
+fn scenario_legacy_paused_inactive_row_reader_semantics() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    subscribe(&client, &user, &merchant, 1_0000000, 86_400, &token_addr, &None);
+
+    env.as_contract(&contract_id, || {
+        let key = DataKey::Subscription(user.clone());
+        let mut sub: Subscription = env.storage().persistent().get(&key).unwrap();
+        sub.active = false;
+        sub.paused = true;
+        env.storage().persistent().set(&key, &sub);
+        env.storage().instance().set(&DataKey::ActiveCount, &0u64);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantSubCount(merchant.clone()), &0u64);
+    });
+    env.ledger().set_timestamp(86_401);
+
+    assert_eq!(client.get_active_count(), 0);
+    assert_eq!(client.get_merchant_sub_count(&merchant), 0);
+    assert_eq!(client.get_merchant_subscriber_count(&merchant), 0);
+    let merchant_counts = client.get_merchant_sub_counts(&soroban_sdk::vec![&env, merchant.clone()]);
+    assert_eq!(merchant_counts.get(0), Some((merchant.clone(), 0)));
+    assert_eq!(client.get_active_subscriber_page(&0, &10).len(), 0);
+    assert!(client
+        .get_next_charge_batch(&0, &10, &Some(false))
+        .is_empty());
+
+    // The raw subscriber page enumerates recorded slots, not active state.
+    let raw_page = client.get_subscriber_page(&0, &10);
+    assert_eq!(raw_page.len(), 1);
+    assert_eq!(raw_page.get(0).unwrap(), user);
+    assert_eq!(client.get_subscriber_at(&0), Some(user.clone()));
+    // Merchant listings likewise enumerate the separate merchant index.
+    assert_eq!(client.get_merchant_page(&0, &10).get(0), Some(merchant.clone()));
+    assert_eq!(
+        client.get_top_merchants_by_subs(&1).get(0),
+        Some((merchant, 0))
+    );
 }
 
 /// The batch path must reach the same place: a user already cancelled in a
@@ -332,7 +384,6 @@ fn scenario_transfer_subscription_moves_subscription_and_index() {
 /// the rebinding fix lands; it should pass then, and the fix is expected to
 /// move each of these keys and clear the old address's copy.
 #[test]
-#[ignore = "transfer does not rebind metadata/history/referral yet (fix not in tree)"]
 fn scenario_transfer_subscription_rebinds_metadata_history_and_referral() {
     let (env, contract_id, token_addr, user_old, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);

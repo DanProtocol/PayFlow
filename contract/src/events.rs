@@ -20,6 +20,7 @@ pub struct ChargeEventData {
     pub net: i128,
     pub charged_at: u64,
     pub ledger_sequence: u32,
+    pub paid_to: Option<Address>,
 }
 
 #[soroban_sdk::contracttype]
@@ -92,14 +93,16 @@ pub fn publish_pay_per_use(env: &Env, user: &Address, merchant: &Address, amount
     );
 }
 
+/// Publishes the same checked net amount used for the merchant transfer and revenue.
 pub fn publish_charged(
     env: &Env,
     user: &Address,
     sub: &Subscription,
     fee_amount: i128,
+    net: i128,
     charged_at: u64,
+    paid_to: Option<Address>,
 ) {
-    let net = sub.amount - fee_amount;
     env.events().publish(
         (Symbol::new(env, "charged"), user.clone()),
         ChargeEventData {
@@ -109,6 +112,7 @@ pub fn publish_charged(
             net,
             charged_at,
             ledger_sequence: env.ledger().sequence(),
+            paid_to,
         },
     );
 }
@@ -402,7 +406,12 @@ pub fn publish_subscription_transferred(env: &Env, old_user: &Address, new_user:
     );
 }
 
-pub fn emit_subscription_transferred(env: &Env, from: &Address, to: &Address, sub: &Subscription) {
+pub fn publish_subscription_transferred_detailed(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    sub: &Subscription,
+) {
     env.events().publish(
         (
             Symbol::new(env, "subscription_transferred"),

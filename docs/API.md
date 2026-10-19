@@ -79,11 +79,13 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [get\_merchant\_revenue\_history](#get_merchant_revenue_history)
   - [clear\_merchant\_revenue\_history](#clear_merchant_revenue_history)
   - [get\_merchant\_subscriber\_count](#get_merchant_subscriber_count)
+  - [get\_merchant\_sub\_count](#get_merchant_sub_count)
   - [reset\_merchant\_revenue](#reset_merchant_revenue)
   - [set\_daily\_limit](#set_daily_limit)
   - [remove\_daily\_limit](#remove_daily_limit)
   - [get\_daily\_limit](#get_daily_limit)
   - [get\_daily\_spent](#get_daily_spent)
+  - [get\_referral](#get_referral)
   - [get\_referrer](#get_referrer)
   - [migrate](#migrate)
   - [get\_schema\_version](#get_schema_version)
@@ -98,6 +100,8 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [set\_initial\_admin](#set_initial_admin)
   - [contract\_health\_check](#contract_health_check)
   - [clear\_charge\_history](#clear_charge_history)
+  - [prune\_charge\_history](#prune_charge_history)
+  - [get\_charge\_history\_ttl](#get_charge_history_ttl)
   - [get\_charge\_history\_page](#get_charge_history_page)
   - [transfer\_subscription](#transfer_subscription)
   - [validate\_subscription](#validate_subscription)
@@ -290,18 +294,18 @@ pub struct HealthReport {
 
 | Field                           | Type   | Meaning                                                                                                                                                                                 |
 | ------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `is_healthy`                    | `bool` | `!contract_paused && token_configured && admin_configured && instance_ttl_ledgers > 17_280`                                                                                             |
+| `is_healthy`                    | `bool` | `!contract_paused && token_configured && admin_configured`. Does **not** include instance TTL.                                                                                          |
 | `contract_paused`               | `bool` | Protocol pause flag                                                                                                                                                                     |
 | `token_configured`              | `bool` | Instance token is set                                                                                                                                                                   |
 | `admin_configured`              | `bool` | Admin is set                                                                                                                                                                            |
-| `instance_ttl_ledgers`          | `u32`  | **On-chain:** hardcoded `100_000` (Soroban does not expose `get_ttl()` outside tests). **Test/testutils:** real instance TTL. Do not treat the on-chain value as precise remaining TTL. |
+| `instance_ttl_ledgers`          | `u32`  | **Placeholder on-chain:** hardcoded `100_000` (Soroban does not expose `get_ttl()` outside tests). **Test/testutils:** real instance TTL. Telemetry only; not used by `is_healthy`.     |
 | `active_subscription_count`     | `u64`  | Active subscription counter                                                                                                                                                             |
 | `schema_version`                | `u32`  | Migration schema version                                                                                                                                                                |
 | `fee_collector_set`             | `bool` | Protocol fee collector is set                                                                                                                                                           |
 | `global_volume_utilization_pct` | `u32`  | `(accumulated * 100) / cap`, clamped to ≤ 100; `0` if cap is 0. Cap is `GlobalVolumeCapOverride` or `GLOBAL_MAX_VOLUME_PER_HOUR`.                                                       |
 | `pending_merchant_rev_count`    | `u32`  | Merchants in `MerchantIndex` with accumulated revenue (`MerchantRevenue`) `> 0`. This is a **tracking metric**, not a custodial balance — revenue settles directly into merchant wallets on every charge via SAC `transfer_from`. See [`MERCHANT-INTEGRATION.md` § 5](./MERCHANT-INTEGRATION.md#5-non-custodial-settlement--revenue-tracking). |
 
-**How to interpret:** treat `is_healthy == false` as “do not send production traffic” until pause, token, admin, or TTL flags are understood. `fee_collector_set` and volume utilization are informational and do **not** enter the `is_healthy` formula. `global_volume_utilization_pct` uses `effective_global_volume_cap` (override when set, compile-time constant otherwise) — the same value charge enforcement uses (see [`limits.md` — Global Hourly Volume Cap](./limits.md#global-hourly-volume-cap)).
+**How to interpret:** treat `is_healthy == false` as “do not send production traffic” until pause, token, or admin flags are understood. `instance_ttl_ledgers`, `fee_collector_set`, and volume utilization are informational and do **not** enter the `is_healthy` formula. On-chain `instance_ttl_ledgers` is a fabricated constant, not a measurement. `global_volume_utilization_pct` uses `effective_global_volume_cap` (override when set, compile-time constant otherwise) — the same value charge enforcement uses (see [`limits.md` — Global Hourly Volume Cap](./limits.md#global-hourly-volume-cap)).
 
 ### `DataKey`
 
@@ -1438,7 +1442,7 @@ A non-`Charged` result for one user never aborts the rest of the batch. Insuffic
 
 The public wrapper calls `ensure_contract_not_paused` first: a paused protocol panics `ContractPaused` (18) for the whole invoke (not a per-user result).
 
-Errors: `ContractError::BatchTooLarge` (20) if `users.len()` exceeds `get_max_batch_size` (default 50, ceiling 200). Ordinary per-user outcomes are enum values. Full cap table: [limits.md](./limits.md#batch-operations).
+Errors: `ContractError::BatchTooLarge` (20) if `users.len()` exceeds `get_max_batch_size` (default 50, ceiling 200). `get_max_batch_size` is sourced from a single implementation in [contract/src/caps.rs](../contract/src/caps.rs) (the same key and default used by `contract/src/batch.rs`). Ordinary per-user outcomes are enum values. Full cap table: [limits.md](./limits.md#batch-operations).
 
 Keeper ops: [`KEEPER.md`](./KEEPER.md).
 
@@ -1664,6 +1668,8 @@ Auth: none.
 
 Returns: `u64`.
 
+**Alias:** this is the canonical reader for `DataKey::MerchantSubCount`; it delegates to the single implementation in `contract/src/merchant_stats.rs`. [`get_merchant_sub_count`](#get_merchant_sub_count) is a thin alias over the same body.
+
 CLI example:
 
 ```bash
@@ -1679,6 +1685,8 @@ get_merchant_sub_count(env: Env, merchant: Address) -> u32
 Auth: none.
 
 Returns: `u32` — active subscriber count for `merchant` (same `MerchantSubCount` storage as `get_merchant_subscriber_count`, narrowed to `u32`).
+
+**Alias:** thin delegation to [`get_merchant_subscriber_count`](#get_merchant_subscriber_count); both read `DataKey::MerchantSubCount` through the same `merchant_stats` implementation, so the two can never disagree.
 
 CLI example:
 
@@ -1774,6 +1782,8 @@ Auth: none.
 
 Returns: `Option<Address>`.
 
+**Alias:** `get_referral` and `get_referrer` are byte-identical readers of `DataKey::Referral(user)`; `get_referrer` is the canonical implementation and `get_referral` is a thin delegation to it. Both names remain exported.
+
 CLI example:
 
 ```bash
@@ -1828,6 +1838,8 @@ Auth: none.
 
 Returns: `Option<String>`.
 
+**Alias:** `get_metadata` and [`get_subscription_label`](#get_subscription_label) are byte-identical readers of `DataKey::SubscriptionMeta(user)`; `get_metadata` is the canonical implementation and `get_subscription_label` is a thin delegation to it. Both names remain exported.
+
 CLI example:
 
 ```bash
@@ -1843,6 +1855,8 @@ get_subscription_label(env: Env, user: Address) -> Option<String>
 Auth: none.
 
 Returns: `Option<String>`.
+
+**Alias:** thin delegation to [`get_metadata`](#get_metadata); both read `DataKey::SubscriptionMeta(user)` through the same implementation.
 
 CLI example:
 
@@ -1960,11 +1974,11 @@ contract_health_check(env: Env) -> HealthReport
 
 **Returns:** [`HealthReport`](#healthreport).
 
-**Success behavior:** builds the struct; does not panic on the normal path. `is_healthy` is true only when the contract is not paused, token and admin are set, and `instance_ttl_ledgers > 17_280`.
+**Success behavior:** builds the struct; does not panic on the normal path. `is_healthy` is true only when the contract is not paused and token and admin are set. Instance TTL is not part of that decision.
 
 **Errors:** none defined.
 
-**Operational notes:** on-chain `instance_ttl_ledgers` is a hardcoded `100_000`. Off-chain `scripts/health-check.ts` is a **shallow** RPC simulation of `get_schema_version` and `get_active_count` only — it does not call this method. See [`MAINNET-DEPLOYMENT.md`](./MAINNET-DEPLOYMENT.md#3-health).
+**Operational notes:** on-chain `instance_ttl_ledgers` is a hardcoded `100_000` placeholder and must not be read as remaining TTL. Off-chain `scripts/health-check.ts` is a **shallow** RPC simulation of `get_schema_version` and `get_active_count` only — it does not call this method. See [`MAINNET-DEPLOYMENT.md`](./MAINNET-DEPLOYMENT.md#3-health).
 
 CLI example:
 
@@ -1982,10 +1996,28 @@ Auth: `user.require_auth()`.
 
 Returns: `()`.
 
+**Alias:** `clear_charge_history` and `prune_charge_history` are byte-identical; `clear_charge_history` is the canonical implementation and `prune_charge_history` is a thin delegation to it. Both names remain exported.
+
 CLI example:
 
 ```bash
 soroban contract invoke --id <CONTRACT_ID> --source <USER_KEY> --network testnet -- clear_charge_history --user <USER_ADDRESS>
+```
+
+### `get_charge_history_ttl`
+
+```
+get_charge_history_ttl(env: Env, user: Address) -> u32
+```
+
+**Auth:** none.
+
+**Returns:** In **test/testutils** builds, the persistent TTL of `ChargeHistory(user)`, or `0` if the key is absent. **On-chain / production always returns `0`** because Soroban does not expose `get_ttl()` outside tests. Do not treat the production value as a live remaining-TTL measurement, and do not treat `0` as “history expired”.
+
+CLI example:
+
+```bash
+soroban contract invoke --id <CONTRACT_ID> --network testnet -- get_charge_history_ttl --user <USER_ADDRESS>
 ```
 
 ### `get_charge_history_page`

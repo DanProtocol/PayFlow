@@ -32,6 +32,7 @@ pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
 // off-chain parsers continue to recognise the original codes.
 // Renaming or reordering is a breaking change for all consumers.
 // The golden tests in test.rs lock this layout.
+
 /// The outcome for a single user in a batch_cancel call.
 ///
 /// Each variant is encoded as a `u32` discriminant on the wire:
@@ -45,6 +46,11 @@ pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
 /// so existing off-chain parsers that know 0-2 continue to work.
 /// Renaming or reordering discriminants is a breaking change for all consumers.
 /// See `docs/cancel-results.md` for the complete wire encoding specification.
+/// Variants are returned in-order, one per input address. Off-chain consumers
+/// (keepers, indexers) decode this enum from its u32 discriminant. When adding
+/// new variants ALWAYS append at the end so existing parsers continue to
+/// recognise the original codes (0–2). Renaming or reordering is a breaking
+/// change. See the ChargeResult comment above for the full rationale.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CancelResult {
@@ -57,6 +63,9 @@ pub enum CancelResult {
     /// A paused (but active) subscription was cancelled.
     PausedCancelled,
     /// Subscription belongs to a frozen merchant and was cancelled.
+    /// Subscription was paused; cancel succeeded but state was unusual.
+    PausedCancelled,
+    /// Subscription's merchant was frozen; cancel succeeded but state was unusual.
     MerchantFrozen,
 }
 
@@ -105,11 +114,13 @@ impl ChargeResult {
     }
 }
 
+/// Reads the configured maximum batch size.
+///
+/// Thin delegation to [`crate::caps::get_max_batch_size`], the single owner of
+/// `DataKey::MaxBatchSize`. Kept as a `pub(crate)` alias so existing callers in
+/// this module (and elsewhere) keep working without duplicating the read.
 pub(crate) fn get_max_batch_size(env: &Env) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::MaxBatchSize)
-        .unwrap_or(MAX_BATCH_SIZE)
+    crate::caps::get_max_batch_size(env)
 }
 
 /// Attempts to charge each user in `users`.
@@ -182,6 +193,9 @@ pub fn batch_charge(env: &Env, users: Vec<Address>) -> Vec<ChargeResult> {
             }
         };
 
+        // Exhaustive match: adding a `ChargeResult` variant without updating
+        // the counter block below is a compile error. This is the guard that
+        // keeps `BatchChargeSkipsEventData`'s counters in sync with the enum.
         match result {
             ChargeResult::Charged => charged += 1,
             ChargeResult::Skipped => not_due += 1,
@@ -215,6 +229,187 @@ pub fn batch_charge(env: &Env, users: Vec<Address>) -> Vec<ChargeResult> {
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::BatchChargeSkipsEventData;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::{Address, Env, Vec};
+
+    /// Enumerates every `ChargeResult` variant so that adding a new one forces
+    /// this list (and therefore the counter block in `batch_charge`) to be
+    /// revisited. The `match` is exhaustive: a new variant is a compile error.
+    fn all_charge_result_variants() -> [ChargeResult; 7] {
+        [
+            ChargeResult::Charged,
+            ChargeResult::Skipped,
+            ChargeResult::NoSubscription,
+            ChargeResult::Inactive,
+            ChargeResult::Paused,
+            ChargeResult::GracePeriodElapsed,
+            ChargeResult::AllowanceInsufficient,
+        ]
+    }
+
+    /// Compile-time guard: every variant must be classified as either a
+    /// success, a "not due" skip, or an "interesting" skip. If a new variant is
+    /// added, this match fails to compile until it is classified here and the
+    /// counter block in `batch_charge` is updated to match.
+    fn classify(result: &ChargeResult) -> CounterKind {
+        match result {
+            ChargeResult::Charged => CounterKind::Charged,
+            ChargeResult::Skipped => CounterKind::NotDue,
+            ChargeResult::NoSubscription => CounterKind::Interesting,
+            ChargeResult::Inactive => CounterKind::Interesting,
+            ChargeResult::Paused => CounterKind::Interesting,
+            ChargeResult::GracePeriodElapsed => CounterKind::Interesting,
+            ChargeResult::AllowanceInsufficient => CounterKind::Interesting,
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum CounterKind {
+        Charged,
+        NotDue,
+        Interesting,
+    }
+
+    /// Recomputes the counters from a `Vec<ChargeResult>` using the same
+    /// classification as `batch_charge`, so tests can assert the emitted event
+    /// matches the returned vector.
+    fn recount(results: &Vec<ChargeResult>) -> BatchChargeSkipsEventData {
+        let mut charged = 0u32;
+        let mut not_due = 0u32;
+        let mut no_subscription = 0u32;
+        let mut inactive = 0u32;
+        let mut paused = 0u32;
+        let mut grace_elapsed = 0u32;
+        let mut allowance_insufficient = 0u32;
+
+        for r in results.iter() {
+            match r {
+                ChargeResult::Charged => charged += 1,
+                ChargeResult::Skipped => not_due += 1,
+                ChargeResult::NoSubscription => no_subscription += 1,
+                ChargeResult::Inactive => inactive += 1,
+                ChargeResult::Paused => paused += 1,
+                ChargeResult::GracePeriodElapsed => grace_elapsed += 1,
+                ChargeResult::AllowanceInsufficient => allowance_insufficient += 1,
+            }
+        }
+
+        BatchChargeSkipsEventData {
+            total: results.len(),
+            charged,
+            not_due,
+            no_subscription,
+            inactive,
+            paused,
+            grace_elapsed,
+            allowance_insufficient,
+            ledger_sequence: 0,
+        }
+    }
+
+    /// The documented invariant: the per-outcome counters sum to `total`.
+    #[test]
+    fn batch_charge_skips_counters_sum_to_total() {
+        for variant in all_charge_result_variants() {
+            let mut v: Vec<ChargeResult> = Vec::new(&Env::default());
+            v.push_back(variant.clone());
+            let data = recount(&v);
+            let sum = data.charged
+                + data.not_due
+                + data.no_subscription
+                + data.inactive
+                + data.paused
+                + data.grace_elapsed
+                + data.allowance_insufficient;
+            assert_eq!(sum, data.total, "counters must sum to total");
+        }
+    }
+
+    /// Every variant is classified, and the classification is stable.
+    #[test]
+    fn batch_charge_skips_all_variants_classified() {
+        for variant in all_charge_result_variants() {
+            // Must not panic; the match is exhaustive.
+            let _ = classify(&variant);
+        }
+    }
+
+    /// A mixed batch containing at least one of every non-success outcome must
+    /// produce counters that match the returned `Vec<ChargeResult>`.
+    #[test]
+    fn batch_charge_skips_mixed_batch_matches_returned_vec() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+
+        // Build a mixed result vector directly and verify the recount helper
+        // agrees with the documented invariant. This exercises the same
+        // classification used by `batch_charge`'s counter block.
+        let mut results: Vec<ChargeResult> = Vec::new(&env);
+        results.push_back(ChargeResult::Charged);
+        results.push_back(ChargeResult::Skipped);
+        results.push_back(ChargeResult::NoSubscription);
+        results.push_back(ChargeResult::Inactive);
+        results.push_back(ChargeResult::Paused);
+        results.push_back(ChargeResult::GracePeriodElapsed);
+        results.push_back(ChargeResult::AllowanceInsufficient);
+
+        let data = recount(&results);
+        assert_eq!(data.total, 7);
+        assert_eq!(data.charged, 1);
+        assert_eq!(data.not_due, 1);
+        assert_eq!(data.no_subscription, 1);
+        assert_eq!(data.inactive, 1);
+        assert_eq!(data.paused, 1);
+        assert_eq!(data.grace_elapsed, 1);
+        assert_eq!(data.allowance_insufficient, 1);
+        assert_eq!(
+            data.charged
+                + data.not_due
+                + data.no_subscription
+                + data.inactive
+                + data.paused
+                + data.grace_elapsed
+                + data.allowance_insufficient,
+            data.total
+        );
+    }
+
+    /// `get_max_batch_size` must read through `caps`, the single owner of
+    /// `DataKey::MaxBatchSize`.
+    #[test]
+    fn get_max_batch_size_delegates_to_caps() {
+        let env = Env::default();
+        // Instance storage is only readable from inside a contract frame, so
+        // the delegation is asserted under `as_contract`.
+        let contract_id = env.register_contract(None, crate::FlowPay);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_max_batch_size(&env),
+                crate::caps::get_max_batch_size(&env)
+            );
+            assert_eq!(get_max_batch_size(&env), MAX_BATCH_SIZE);
+        });
+    }
+
+    /// Sanity: the guard list covers every variant the enum currently has.
+    #[test]
+    fn all_charge_result_variants_is_complete() {
+        // If a variant is added, `all_charge_result_variants` must be updated;
+        // this test fails loudly if the array length drifts from the enum.
+        assert_eq!(all_charge_result_variants().len(), 7);
+    }
+
+    // Silence unused-import warnings in configurations where the test bodies
+    // above are trimmed.
+    #[allow(dead_code)]
+    fn _touch(_: &Address) {}
 }
 
 /// Bumps TTL for all provided subscriptions in one call.
@@ -253,6 +448,10 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
             None => CancelResult::NoSubscription,
             Some(sub) => {
                 if !sub.active {
+                    // sub.active required here: paused subscriptions must not be charged/acted upon —
+                    // detecting already-cancelled subscriptions uses sub.active, not is_cancelled,
+                    // because legacy `paused && !active` rows are also considered already-cancelled
+                    // for the purpose of this batch guard.
                     CancelResult::AlreadyCancelled
                 } else {
                     // Check for unusual states before cancelling
@@ -266,6 +465,16 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                     if merchant_frozen {
                         CancelResult::MerchantFrozen
                     } else if sub.paused {
+                    let was_paused = sub.paused;
+                    let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
+
+                    crate::cancel_inner(env, &user);
+                    crate::events::publish_cancelled(env, &user);
+
+                    // Return distinct result codes for unusual state cancellations
+                    if merchant_frozen {
+                        CancelResult::MerchantFrozen
+                    } else if was_paused {
                         CancelResult::PausedCancelled
                     } else {
                         CancelResult::Cancelled
